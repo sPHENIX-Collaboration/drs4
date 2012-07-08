@@ -113,16 +113,16 @@ int drs_plugin::create_device(deviceblock *db)
 	    {
 	      slope = atoi ( db->argv5);
 	    }
-	  std::cout << __LINE__ << "  " << db->argv5 << "  " << slope << std::endl;
+
 
 	  int delay = atoi ( db->argv6);
 
-	  std::cout << __FILE__ << "  " << __LINE__ << "  " 
-		    << trigger << " "  
-		    << th << "  "
-		    << slope << "  "
-		    << delay << "  "
-		    << std::endl;
+	  // std::cout << __FILE__ << "  " << __LINE__ << "  " 
+	  // 	    << trigger << " "  
+	  // 	    << th << "  "
+	  // 	    << slope << "  "
+	  // 	    << delay << "  "
+	  // 	    << std::endl;
 
 	  add_readoutdevice ( new daq_device_drs( eventtype,
 					      subid,
@@ -180,7 +180,7 @@ int drs_plugin::create_device(deviceblock *db)
 
 void drs_plugin::identify(std::ostream& os, const int flag) const
 {
-      os << " flag is " << flag  << std::endl;
+
   if ( flag <=2 )
     {
       os << " - DRS Plugin" << std::endl;
@@ -189,9 +189,9 @@ void drs_plugin::identify(std::ostream& os, const int flag) const
     {
       os << " - DRS Plugin, provides - " << std::endl;
       os << " -     device_drs (evttype, subid, triggerchannel, triggerthreshold[mV], slope[n/p], delay[ns]) - DRS4 Eval Board " << std::endl;
-      //      os << " -     device_tspmparams (evttype, subid, IP addr) - readback of TSPM configuration" << std::endl;
     }
       
+
 }
 
 

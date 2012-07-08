@@ -102,7 +102,7 @@ int daq_device_drs::put_data(const int etype, int * adr, const int length )
 
   if ( length < max_length(etype) ) 
     {
-      cout << __LINE__ << "  " << __FILE__ << " length " << length <<endl;
+      //      cout << __LINE__ << "  " << __FILE__ << " length " << length <<endl;
       return 0;
     }
 
@@ -188,6 +188,13 @@ int daq_device_drs::max_length(const int etype) const
 int  daq_device_drs::init()
 {
 
+  if ( _broken ) 
+    {
+      //      cout << __LINE__ << "  " << __FILE__ << " broken ";
+      //      identify();
+      return 0; //  we had a catastrophic failure
+    }
+
   b->Reinit();
   b->SetFrequency(getGS(), 1);
 
@@ -205,6 +212,13 @@ int  daq_device_drs::init()
 // the rearm() function
 int  daq_device_drs::rearm(const int etype)
 {
+  if ( _broken ) 
+    {
+      //      cout << __LINE__ << "  " << __FILE__ << " broken ";
+      //      identify();
+      return 0; //  we had a catastrophic failure
+    }
+
   if (etype != m_eventType) return 0;
 
   b->StartDomino();
@@ -214,11 +228,24 @@ int  daq_device_drs::rearm(const int etype)
 
 double daq_device_drs::getActualGS() const 
 {
+  if ( _broken ) 
+    {
+      //      cout << __LINE__ << "  " << __FILE__ << " broken ";
+      //      identify();
+      return 0; //  we had a catastrophic failure
+    }
   return b->GetPrecision();
 }
 
 double daq_device_drs::getGS() const
 {
+  if ( _broken ) 
+    {
+      //      cout << __LINE__ << "  " << __FILE__ << " broken ";
+      //      identify();
+      return 0; //  we had a catastrophic failure
+    }
+
   switch ( _speed)
     {
     case 0:
