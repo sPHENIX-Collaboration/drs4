@@ -166,7 +166,7 @@ void daq_device_drs::identify(std::ostream& os) const
       os  << "DRS4 Eval Board  Event Type: " << m_eventType 
 	  << " Subevent id: " << m_subeventid 
 	  << " serial # "     << b->GetBoardSerialNumber() 
-	  << " Firmware rev " << b->GetFirmwareVersion()
+	//	  << " Firmware rev " << b->GetFirmwareVersion()
 	  << " Trigger " << _trigger
 	  << " Threshold " << _tthreshold;
       if (_slope) os << " negative " ;
