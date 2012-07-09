@@ -155,13 +155,13 @@ int drs_plugin::create_device(deviceblock *db)
 	  int delay = atoi ( db->argv6);
 	  int speed = atoi ( db->argv7);
 
-	  std::cout << __FILE__ << "  " << __LINE__ << "  " 
-		    << trigger << " "  
-		    << th << "  "
-		    << slope << "  "
-		    << delay << "  "
-		    << speed 
-		    << std::endl;
+	  // std::cout << __FILE__ << "  " << __LINE__ << "  " 
+	  // 	    << trigger << " "  
+	  // 	    << th << "  "
+	  // 	    << slope << "  "
+	  // 	    << delay << "  "
+	  // 	    << speed 
+	  // 	    << std::endl;
 
 	  add_readoutdevice ( new daq_device_drs( eventtype,
 					      subid,
