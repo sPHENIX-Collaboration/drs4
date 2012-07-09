@@ -57,9 +57,11 @@ daq_device_drs::daq_device_drs(const int eventtype
 
 daq_device_drs::~daq_device_drs()
 {
-  if (b) delete b;
+  // if (b) delete b;
   
   if ( _drs ) delete _drs;
+  b = 0;
+
   if (_th)
     {
       clearTriggerHandler();
