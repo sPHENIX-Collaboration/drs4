@@ -5,14 +5,13 @@
 
   Contents:     Library functions for DRS mezzanine and USB boards
 
-  $Id: DRS.cpp 18184 2011-07-26 11:19:53Z ritt $
+  $Id: DRS.cpp 20424 2012-11-27 11:34:31Z ritt $
 
 \********************************************************************/
 
-
-//#define MLPTRACE
-
-
+#ifdef USE_DRS_MUTEX 
+#include "wx/wx.h"    // must be before <windows.h>
+#endif
 
 #include <stdio.h>
 #include <math.h>
@@ -23,6 +22,7 @@
 #include <algorithm>
 #include <sys/stat.h>
 #include "strlcpy.h"
+#include "DRS.h"
 
 #ifdef _MSC_VER
 #pragma warning(disable:4996)
@@ -42,6 +42,7 @@ inline void Sleep(useconds_t x)
 #define drs_kbhit() kbhit()
 #else
 #include <sys/ioctl.h>
+
 int drs_kbhit()
 {
    int n;
@@ -146,7 +147,6 @@ unsigned char static *usb2_buffer = NULL;
 /*------------------------------------------------------------------*/
 
 #ifdef USE_DRS_MUTEX
-#include "wx/wx.h" 
 static wxMutex *s_drsMutex = NULL; // used for wxWidgets multi-threaded programs
 #endif
 
@@ -329,9 +329,7 @@ DRS::DRS()
       if (musb_open(&usb_interface, 0x04B4, 0x1175, index, 1, 0) == MUSB_SUCCESS) {
 
          /* check ID */
-         struct usb_device_descriptor d;
-         usb_get_descriptor(usb_interface->dev, USB_DT_DEVICE, 0, &d, sizeof(d));
-         if (d.bcdDevice != 1) {
+         if (musb_get_device(usb_interface) != 1) {
             /* no DRS evaluation board found */
             musb_close(usb_interface);
          } else {
@@ -1437,11 +1435,6 @@ void DRSBoard::SetLED(int state)
 
 int DRSBoard::SetChannelConfig(int firstChannel, int lastChannel, int nConfigChannels)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetChannelConfig" << endl;
-#endif
-
    unsigned short d;
 
    if (lastChannel < 0 || lastChannel > 10) {
@@ -1562,9 +1555,6 @@ int DRSBoard::SetChannelConfig(int firstChannel, int lastChannel, int nConfigCha
 
 void DRSBoard::SetNumberOfChannels(int nChannels)
 {
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << "  DRSBoard::SetNumberOfChannels " << endl;
-#endif
    SetChannelConfig(0, nChannels - 1, 12);
 }
 
@@ -1572,11 +1562,6 @@ void DRSBoard::SetNumberOfChannels(int nChannels)
 
 void DRSBoard::SetADCClkPhase(int phase, bool invert)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << "  DRSBoard::SetADCClkPhase " << endl;
-#endif
-
    unsigned short d;
 
    /* Set the clock phase of the ADC via the variable phase shift
@@ -1603,13 +1588,6 @@ void DRSBoard::SetADCClkPhase(int phase, bool invert)
 
 void DRSBoard::SetWarmup(unsigned int microseconds)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetWarmup " << endl;
-#endif
-
-
-
    /* Set the "warmup" time. When starting the domino wave, the DRS4
       chip together with its power supply need some time to stabilize
       before high resolution data can be taken (jumping baseline
@@ -1629,11 +1607,6 @@ void DRSBoard::SetWarmup(unsigned int microseconds)
 
 void DRSBoard::SetCooldown(unsigned int microseconds)
 {
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::Cooldown " << endl;
-#endif
-
-
    /* Set the "cooldown" time. When stopping the domino wave, the 
       power supply needs some time to stabilize before high resolution 
       data can read out (slanted baseline problem). This sets the 
@@ -1649,11 +1622,6 @@ void DRSBoard::SetCooldown(unsigned int microseconds)
 
 int DRSBoard::SetDAC(unsigned char channel, double value)
 {
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetDAC " << endl;
-#endif
-
-
    // Set DAC value
    unsigned short d;
 
@@ -1673,14 +1641,6 @@ int DRSBoard::SetDAC(unsigned char channel, double value)
 
 int DRSBoard::ReadDAC(unsigned char channel, double *value)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::ReadDAC " << endl;
-#endif
-
-
-
-
    // Readback DAC value from control register
    unsigned char buffer[2];
 
@@ -1699,14 +1659,6 @@ int DRSBoard::ReadDAC(unsigned char channel, double *value)
 
 int DRSBoard::GetRegulationDAC(double *value)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::GetRegulationDAC " << endl;
-#endif
-
-
-
-
    // Get DAC value from status register (-> freq. regulation)
    unsigned char buffer[2];
 
@@ -1725,13 +1677,7 @@ int DRSBoard::GetRegulationDAC(double *value)
 
 int DRSBoard::StartDomino()
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::StartDomino " << endl;
-#endif
-
-
-   // Start domino sampling 
+   // Start domino sampling
    fCtrlBits |= BIT_START_TRIG;
    Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
    fCtrlBits &= ~BIT_START_TRIG;
@@ -1743,14 +1689,6 @@ int DRSBoard::StartDomino()
 
 int DRSBoard::Reinit()
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::Reinit " << endl;
-#endif
-
-
-
-
    // Stop domino sampling
    // reset readout state machine
    // reset FIFO counters
@@ -1765,14 +1703,6 @@ int DRSBoard::Reinit()
 
 int DRSBoard::Init()
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::Init " << endl;
-#endif
-
-
-
-
    // Init FPGA on USB2 board
    InitFPGA();
 
@@ -1982,13 +1912,6 @@ int DRSBoard::Init()
 
 int DRSBoard::SetDominoMode(unsigned char mode)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetDominoMode " << endl;
-#endif
-
-
-
    // Set domino mode
    // mode == 0: single sweep
    // mode == 1: run continously
@@ -2018,13 +1941,6 @@ int DRSBoard::SetDominoMode(unsigned char mode)
 
 int DRSBoard::SetDominoActive(unsigned char mode)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetDominoActive " << endl;
-#endif
-
-
-
    // Set domino activity
    // mode == 0: stop during readout
    // mode == 1: keep domino wave running
@@ -2044,14 +1960,6 @@ int DRSBoard::SetDominoActive(unsigned char mode)
 
 int DRSBoard::SetReadoutMode(unsigned char mode)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetReadoutMode " << endl;
-#endif
-
-
-
-
    // Set readout mode
    // mode == 0: start from first bin
    // mode == 1: start from domino stop
@@ -2071,14 +1979,6 @@ int DRSBoard::SetReadoutMode(unsigned char mode)
 
 int DRSBoard::SoftTrigger(void)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SoftTrigger " << endl;
-#endif
-
-
-
-
    // Send a software trigger
    fCtrlBits |= BIT_SOFT_TRIG;
    Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
@@ -2091,14 +1991,6 @@ int DRSBoard::SoftTrigger(void)
 
 int DRSBoard::EnableTrigger(int flag1, int flag2)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::EnableTrigger " << flag1 << "  " << flag2 << endl;
-#endif
-
-
-
-
    // Enable external trigger
    fTriggerEnable1 = flag1;
    fTriggerEnable2 = flag2;
@@ -2121,14 +2013,6 @@ int DRSBoard::EnableTrigger(int flag1, int flag2)
 
 int DRSBoard::SetDelayedTrigger(int flag)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetDelayedTrigger " << flag << endl;
-#endif
-
-
-
-
    // Select delayed trigger from trigger bus
    if (flag)
       fCtrlBits |= BIT_TRIGGER_DELAYED;
@@ -2144,14 +2028,6 @@ int DRSBoard::SetDelayedTrigger(int flag)
 
 int DRSBoard::SetTriggerLevel(double voltage, bool negative)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetTrigggerLevel " << endl;
-#endif
-
-
-
-
    if (fBoardType == 5 || fBoardType == 7) {
       fTcalLevel = negative;
 
@@ -2187,13 +2063,6 @@ int DRSBoard::SetTriggerLevel(double voltage, bool negative)
 int DRSBoard::SetTriggerDelayPercent(int delay)
 /* set trigger delay in percent 0..100 */
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetTriggerDelayPercent " << delay << endl;
-#endif
-
-
-
    short ticks, reg;
    fTriggerDelay = delay;
 
@@ -2236,14 +2105,6 @@ int DRSBoard::SetTriggerDelayPercent(int delay)
 int DRSBoard::SetTriggerDelayNs(int delay)
 /* set trigger delay in nanoseconds */
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetTriggerDelayNs " << delay << endl;
-#endif
-
-
-
-
    short ticks, reg;
    fTriggerDelayNs = delay;
 
@@ -2283,14 +2144,6 @@ int DRSBoard::SetTriggerDelayNs(int delay)
 
 int DRSBoard::SetSyncDelay(int ticks)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetSyncDelay " << endl;
-#endif
-
-
-
-
    short int reg;
 
    if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
@@ -2308,15 +2161,6 @@ int DRSBoard::SetSyncDelay(int ticks)
 
 int DRSBoard::SetTriggerSource(int source)
 {
-
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetTriggerSource "  << source << endl;
-#endif
-
-
-
-
    short int reg;
 
    if (fBoardType == 5 || fBoardType == 7) {
@@ -2347,14 +2191,6 @@ int DRSBoard::SetTriggerSource(int source)
 
 int DRSBoard::SetDelayedStart(int flag)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetDelayedStart "  << flag<< endl;
-#endif
-
-
-
-
    // Enable external trigger
    fDelayedStart = flag;
    if (flag)
@@ -2371,14 +2207,6 @@ int DRSBoard::SetDelayedStart(int flag)
 
 int DRSBoard::SetTranspMode(int flag)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetTranspMode " << flag << endl;
-#endif
-
-
-
-
    // Enable/disable transparent mode
    fTranspMode = flag;
    if (flag)
@@ -2395,14 +2223,6 @@ int DRSBoard::SetTranspMode(int flag)
 
 int DRSBoard::SetStandbyMode(int flag)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetStandbyMode " << flag << endl;
-#endif
-
-
-
-
    // Enable/disable standby mode
    fTranspMode = flag;
    if (flag)
@@ -2419,9 +2239,6 @@ int DRSBoard::SetStandbyMode(int flag)
 
 int DRSBoard::SetDecimation(int flag)
 {
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetDecimation " << flag << endl;
-#endif
    // Drop every odd sample
    fDecimation = flag;
    if (flag)
@@ -2452,11 +2269,6 @@ int DRSBoard::IsBusy()
 
 int DRSBoard::IsEventAvailable()
 {
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::IsEventAvailable " << endl;
-#endif
-
-
    if (!fMultiBuffer)
       return !IsBusy();
 
@@ -2467,12 +2279,6 @@ int DRSBoard::IsEventAvailable()
 
 int DRSBoard::IsPLLLocked()
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::IsPLLLockaed "  << endl;
-#endif
-
-
    // Get running flag
    unsigned int status;
 
@@ -2499,12 +2305,6 @@ int DRSBoard::IsLMKLocked()
 
 int DRSBoard::IsNewFreq(unsigned char chipIndex)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::IsNewFreq " << chipIndex << endl;
-#endif
-
-
    unsigned int status;
 
    Read(T_STATUS, &status, REG_STATUS, 4);
@@ -2517,12 +2317,6 @@ int DRSBoard::IsNewFreq(unsigned char chipIndex)
 
 int DRSBoard::ReadFrequency(unsigned char chipIndex, double *f)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::ReadFrequency " << endl;
-#endif
-
-
    if (fDRSType == 4) {
 
       if (fBoardType == 6) {
@@ -2563,12 +2357,6 @@ int DRSBoard::ReadFrequency(unsigned char chipIndex, double *f)
 
 double DRSBoard::VoltToFreq(double volt)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::VoltToFreq "  << endl;
-#endif
-
-
    if (fDRSType == 3) {
       if (volt <= 1.2001)
          return (volt - 0.6) / 0.2;
@@ -2595,12 +2383,6 @@ double DRSBoard::FreqToVolt(double freq)
 
 int DRSBoard::ConfigureLMK(double sampFreq, bool freqChange, int calFreq, int calPhase)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::ConfigureLMK " << endl;
-#endif
-
-
    unsigned int data[] = { 0x80000100,   // RESET=1
                            0x0007FF00,   // CLKOUT0: EN=1, DIV=FF (=510) MUX=Div&Delay
                            0x00000101,   // CLKOUT1: Disabled
@@ -2725,12 +2507,6 @@ int DRSBoard::ConfigureLMK(double sampFreq, bool freqChange, int calFreq, int ca
 
 int DRSBoard::SetFrequency(double demand, bool wait)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetFrequency " << demand << "  " << wait << endl;
-#endif
-
-
    // Set domino sampling frequency
    double freq, voltage, delta_voltage;
    unsigned short ticks;
@@ -2745,7 +2521,7 @@ int DRSBoard::SetFrequency(double demand, bool wait)
          return 0;
 
       if (fBoardType == 6) {
-         for (i=1 ; i<10 ; i++) {
+         for (i=1 ; i<100 ; i++) {
             ConfigureLMK(demand, true, fTcalFreq, fTcalPhase);
             Sleep(10);
             if (IsLMKLocked())
@@ -3215,9 +2991,6 @@ int DRSBoard::ChipTest()
 
 void DRSBoard::SetVoltageOffset(double offset1, double offset2)
 {
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetVoltageOffset " << offset1 << "  " << offset2 << endl;
-#endif
    if (fDRSType == 3) {
       SetDAC(fDAC_ROFS_1, 0.95 - offset1);
       SetDAC(fDAC_ROFS_2, 0.95 - offset2);
@@ -3232,12 +3005,6 @@ void DRSBoard::SetVoltageOffset(double offset1, double offset2)
 
 int DRSBoard::SetInputRange(double center)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetInputRange " << center << endl;
-#endif
-
-
    if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
       // DRS4 USB Evaluation Boards + Mezzanine Board
 
@@ -3280,13 +3047,6 @@ double DRSBoard::GetExternalClockFrequency()
 
 int DRSBoard::SetMultiBuffer(int flag)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetSetMultiBuffer " << flag << endl;
-#endif
-
-
-
    if (fHasMultiBuffer) {
       // Enable/disable multi-buffering
       fMultiBuffer = flag;
@@ -3325,12 +3085,6 @@ int DRSBoard::GetMultiBufferRP(void)
 
 int DRSBoard::SetMultiBufferRP(unsigned short rp)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::SetMultiBufferRP " << rp << endl;
-#endif
-
-
    if (fHasMultiBuffer) {
       fReadPointer = rp;
       Write(T_CTRL, REG_READ_POINTER, &rp, 2);
@@ -3391,12 +3145,6 @@ int DRSBoard::TransferWaves(int firstChannel, int lastChannel)
 
 int DRSBoard::TransferWaves(unsigned char *p, int firstChannel, int lastChannel)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::TransferWaves " << firstChannel << "  " << lastChannel << endl;
-#endif
-
-
    // Transfer all waveforms at once from VME or USB to location
    int n, i, offset, n_requested, n_bins;
    unsigned int   dw;
@@ -3547,8 +3295,8 @@ int DRSBoard::DecodeWave(unsigned char *waveforms, unsigned int chipIndex, unsig
          if (channel != 4)
            channel = 3-channel;
       }
-   } else
-      channel = channel;
+   } /* else
+      channel = channel; */
 
    // Read channel
    if (fTransport == TR_USB) {
@@ -3634,12 +3382,6 @@ int DRSBoard::GetWave(unsigned char *waveforms, unsigned int chipIndex, unsigned
                       float *waveform, bool responseCalib, int triggerCell, int wsr, bool adjustToClock,
                       float threshold, bool offsetCalib)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::GetWave " <<  endl;
-#endif
-
-
    int ret, i;
    short waveS[2*kNumberOfBins];
    ret =
@@ -3665,12 +3407,6 @@ int DRSBoard::GetWave(unsigned char *waveforms, unsigned int chipIndex, unsigned
                       short *waveform, bool responseCalib, int triggerCell, int wsr, bool adjustToClock,
                       float threshold, bool offsetCalib)
 {
-
-#ifdef MLPTRACE
-  cout << __FILE__ << "  " << __LINE__ << " DRSBoard::GetWave "  << endl;
-#endif
-
-
    unsigned short adcWaveform[kNumberOfBins];
    int i, ret;
 
@@ -4741,7 +4477,7 @@ DRSBoard::TimeData * DRSBoard::GetTimeCalibration(unsigned int chipIndex, bool r
          continue;
       sprintf(fileName, "%s/board%d/TimeCalib_board%d_chip%d_%dMHz.xml", fCalibDirectory, fBoardSerialNumber,
               fBoardSerialNumber, chipIndex, i);
-      rootNode = mxml_parse_file(fileName, error, sizeof(error));
+      rootNode = mxml_parse_file(fileName, error, sizeof(error), NULL);
       if (rootNode == NULL)
          continue;
 

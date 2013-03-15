@@ -33,15 +33,29 @@ daq_device_drs::daq_device_drs(const int eventtype
 
   b = _drs->GetBoard(0);
 
-  _trigger = trigger;
+
+  // the trigger allows to make an "or" of 5 triggers
+  _trigger = trigger & 0x1f;
+
   _tthreshold = triggerthreshold;
   _slope = slope;
   _delay = delay;
-  _speed = speed;
 
+  if ( speed != 0.7 
+       && speed != 1.
+       && speed != 2.
+       && speed != 5. )
+    {
+      _speed =1.;
+      cout << "invalid speed, setting 1GS/s"  << endl;
+    }
+  else
+    {
+      _speed = speed;
+    }
 
   //  cout << __LINE__ << "  " << __FILE__ << " registering triggerhandler " << endl;
-  if ( trigger)
+  if ( _trigger)
     {
       _th  = new drsTriggerHandler (b);
       registerTriggerHandler ( _th);
@@ -71,6 +85,29 @@ daq_device_drs::~daq_device_drs()
 }
 
 
+int  daq_device_drs::init()
+{
+
+  if ( _broken ) 
+    {
+      //      cout << __LINE__ << "  " << __FILE__ << " broken ";
+      //      identify();
+      return 0; //  we had a catastrophic failure
+    }
+
+  b->Reinit();
+  b->SetFrequency(getGS(), 1);
+
+  b->SetTranspMode(1);
+  b->SetInputRange(0);
+  b->EnableTrigger(1,0);              // lemo off, analog trigger on
+  b->SetTriggerSource(_trigger);
+  b->SetTriggerLevel(_tthreshold, _slope);
+  b->SetTriggerDelayNs(_delay);
+ 
+  return 0;
+
+}
 
 // the put_data function
 
@@ -187,29 +224,6 @@ int daq_device_drs::max_length(const int etype) const
   return  (5*1024 + SEVTHEADERLENGTH + 1);
 }
 
-int  daq_device_drs::init()
-{
-
-  if ( _broken ) 
-    {
-      //      cout << __LINE__ << "  " << __FILE__ << " broken ";
-      //      identify();
-      return 0; //  we had a catastrophic failure
-    }
-
-  b->Reinit();
-  b->SetFrequency(getGS(), 1);
-
-  b->SetTranspMode(1);
-  b->SetInputRange(0);
-  b->EnableTrigger(1,0);              // lemo off, analog trigger on
-  b->SetTriggerSource(_trigger);
-  b->SetTriggerLevel(_tthreshold, _slope);
-  b->SetTriggerDelayNs(_delay);
- 
-  return 0;
-
-}
 
 // the rearm() function
 int  daq_device_drs::rearm(const int etype)
@@ -267,7 +281,7 @@ double daq_device_drs::getGS() const
       break;
 
     default:
-      return 0.7;
+      return 1;
       break;
     }
 
