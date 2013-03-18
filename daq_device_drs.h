@@ -20,7 +20,9 @@ public:
 		       , const float triggerthreshold = -0.2
 		       , const int slope = 0
 		       , const int delay = 0
-		       , const int speed = 0);
+		       , const int speed = 1
+		       , const int start = 0
+		       , const int nch = 0);
 
   ~daq_device_drs();
 
@@ -52,6 +54,8 @@ private:
   int _slope;
   int _delay;
   int _speed;
+  int _start;  // this is the first channel to readout
+  int _nch;    // this how many channels to read out
 
   DRS *_drs;
   DRSBoard *b;

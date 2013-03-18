@@ -157,19 +157,79 @@ int drs_plugin::create_device(deviceblock *db)
 	  int delay = get_value ( db->argv6);
 	  int speed = get_value ( db->argv7);
 
-	  // std::cout << __FILE__ << "  " << __LINE__ << "  " 
-	  // 	    << trigger << " "  
-	  // 	    << th << "  "
-	  // 	    << slope << "  "
-	  // 	    << delay << "  "
-	  // 	    << speed 
-	  // 	    << std::endl;
-
 	  add_readoutdevice ( new daq_device_drs( eventtype,
 					      subid,
 					      trigger, th, slope, delay, speed ));
 	  return 0;  // say "we handled this request" 
 	}
+
+      else if ( db->npar == 9)
+	{
+	  int trigger = get_value ( db->argv3);
+	  float th = strtof ( db->argv4, 0);
+
+	  // slope can be 0 (negative) or 1 (positive)
+	  // or P / p or N / n 
+	  int slope = 0;
+	  if ( db->argv5[0] == 'P' || db->argv5[0] == 'p' )
+	    {
+	      slope = 0;
+	    }
+	  else if ( db->argv5[0] == 'N' || db->argv5[0] == 'n' )
+	    {
+	      slope = 1;
+	    }
+	  else
+	    {
+	      slope = get_value ( db->argv5);
+	    }
+	  std::cout << __LINE__ << "  " << db->argv5 << "  " << slope << std::endl;
+
+	  int delay = get_value ( db->argv6);
+	  int speed = get_value ( db->argv7);
+	  int startch = get_value ( db->argv8);
+
+	  add_readoutdevice ( new daq_device_drs( eventtype,
+					      subid,
+						  trigger, th, slope,
+						  delay, speed, startch ));
+	  return 0;  // say "we handled this request" 
+	}
+
+      else if ( db->npar == 10)
+	{
+	  int trigger = get_value ( db->argv3);
+	  float th = strtof ( db->argv4, 0);
+
+	  // slope can be 0 (negative) or 1 (positive)
+	  // or P / p or N / n 
+	  int slope = 0;
+	  if ( db->argv5[0] == 'P' || db->argv5[0] == 'p' )
+	    {
+	      slope = 0;
+	    }
+	  else if ( db->argv5[0] == 'N' || db->argv5[0] == 'n' )
+	    {
+	      slope = 1;
+	    }
+	  else
+	    {
+	      slope = get_value ( db->argv5);
+	    }
+	  std::cout << __LINE__ << "  " << db->argv5 << "  " << slope << std::endl;
+
+	  int delay = get_value ( db->argv6);
+	  int speed = get_value ( db->argv7);
+	  int startch = get_value ( db->argv8);
+	  int nch = get_value ( db->argv9);
+
+	  add_readoutdevice ( new daq_device_drs( eventtype,
+					      subid,
+						  trigger, th, slope,
+						  delay, speed, startch, nch ));
+	  return 0;  // say "we handled this request" 
+	}
+
 
       else
 	{

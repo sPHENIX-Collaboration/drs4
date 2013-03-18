@@ -13,7 +13,9 @@ daq_device_drs::daq_device_drs(const int eventtype
 					   , const float triggerthreshold
 					   , const int slope
 					   , const int delay
-					   , const int speed)
+					   , const int speed
+					   , const int start
+					   , const int nch)
 {
 
   m_eventType  = eventtype;
@@ -37,9 +39,29 @@ daq_device_drs::daq_device_drs(const int eventtype
   // the trigger allows to make an "or" of 5 triggers
   _trigger = trigger & 0x1f;
 
-  _tthreshold = triggerthreshold;
+  _tthreshold = triggerthreshold / 1000. ;
   _slope = slope;
   _delay = delay;
+
+  _start = start;
+  _nch = nch;
+
+  if (  _start  > 1023 )
+    {
+      cout << "** " <<  __FILE__ << " warning: invalid start channels" << endl;
+
+      _start = 0;
+    }
+
+  if ( _nch == 0 ) _nch = 1024;
+
+
+  if ( ( _start + _nch) > 1024 )
+    {
+      cout << "** " <<  __FILE__ << " warning: invalid number of channels" << endl;
+
+      _nch = 1024 - _start;
+    }
 
   if ( speed != 0.7 
        && speed != 1.
@@ -147,7 +169,7 @@ int daq_device_drs::put_data(const int etype, int * adr, const int length )
 
   unsigned int data;
   
-  sevt->data = 1024 | ( 0xf << 16);  // say "1024 samples, all 4 channels on" for now
+  sevt->data = _nch | ( 0xf << 16);  // say "1024 samples, all 4 channels on" for now
 
   b->TransferWaves(0, 8);
 
@@ -158,15 +180,25 @@ int daq_device_drs::put_data(const int etype, int * adr, const int length )
   //  float *x = d;
 
   b->GetTime(0, b->GetTriggerCell(0), d);  // the first 1024 samples are the time bins
-  len += 1024;
-  d += 1024;
+
+  if ( _start)
+    {
+      memmove (d, &d[_start], _nch);
+    }
+
+  len += _nch;
+  d += _nch;
 
   for ( int i = 0; i < 8; i+=2)            // and here come channel 0,2,4,6 (the actually connected channels)
     {
       b->GetWave(0, i, d);
+      if ( _start)
+	{
+	  memmove (d, &d[_start], _nch);
+	}
 
-      len += 1024;
-      d += 1024;
+      len += _nch;
+      d += _nch;
     }
 
 
@@ -207,12 +239,13 @@ void daq_device_drs::identify(std::ostream& os) const
 	  << " serial # "     << b->GetBoardSerialNumber() 
 	//	  << " Firmware rev " << b->GetFirmwareVersion()
 	  << " Trigger " << _trigger
-	  << " Threshold " << _tthreshold;
+	  << " Threshold " << _tthreshold*1000 <<"mV";
       if (_slope) os << " negative " ;
       else os << " positive "; 
       os << " delay " << _delay 
       //      os << " delay " << _delay << " (" << getGS() << "/" << getActualGS() << "GS) "
-	 << " speed " << _speed << " (" << getGS() << "GS) ";
+	 << " speed " << _speed << " (" << getGS() << "GS) "
+	 << " start " << _start << " nch " << _nch;
       os << endl;
 
     }
