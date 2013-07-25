@@ -21,6 +21,7 @@ daq_device_drs::daq_device_drs(const int eventtype
   m_eventType  = eventtype;
   m_subeventid = subeventid;
 
+  _trigger_handler=0;
   _broken = 0;
 
   _drs = new DRS();
@@ -38,6 +39,9 @@ daq_device_drs::daq_device_drs(const int eventtype
 
   // the trigger allows to make an "or" of 5 triggers
   _trigger = trigger & 0x1f;
+
+  // bit number 5 says if we also provide the system trigger
+  _trigger_handler = (trigger & 0x20 != 0); 
 
   _tthreshold = triggerthreshold / 1000. ;
   _slope = slope;
@@ -78,7 +82,7 @@ daq_device_drs::daq_device_drs(const int eventtype
     }
 
   //  cout << __LINE__ << "  " << __FILE__ << " registering triggerhandler " << endl;
-  if ( _trigger)
+  if ( _trigger_handler )
     {
       _th  = new drsTriggerHandler (b);
       registerTriggerHandler ( _th);
@@ -237,18 +241,19 @@ void daq_device_drs::identify(std::ostream& os) const
     {
       os  << "DRS4 Eval Board  Event Type: " << m_eventType 
 	  << " Subevent id: " << m_subeventid 
-	  << " serial # "     << b->GetBoardSerialNumber() 
+	  << " S/N "     << b->GetBoardSerialNumber() 
 	//	  << " Firmware rev " << b->GetFirmwareVersion()
-	  << " Trigger " << _trigger
-	  << " Threshold " << _tthreshold*1000 <<"mV";
-      if (_slope) os << " negative " ;
-      else os << " positive "; 
+	  << " Trg " << _trigger
+	  << " Thresh " << _tthreshold*1000 <<"mV";
+      if (_slope) os << " neg " ;
+      else os << " pos "; 
       os << " delay " << _delay 
       //      os << " delay " << _delay << " (" << getGS() << "/" << getActualGS() << "GS) "
 	 << " speed " << _speed << " (" 
 	//	 << getGS() << " ( " << getActualGS() << ") GS) "
 	 << getGS() <<  "GS) "
 	 << " start " << _start << " nch " << _nch;
+      if (_trigger_handler) os << " * Trigger" ;
       os << endl;
 
     }

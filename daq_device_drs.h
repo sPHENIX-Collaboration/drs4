@@ -50,6 +50,7 @@ private:
   int _broken;
 
   int _trigger;
+  int _trigger_handler;
   float _tthreshold;
   int _slope;
   int _delay;
