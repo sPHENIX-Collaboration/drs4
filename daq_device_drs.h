@@ -20,7 +20,7 @@ public:
 		       , const float triggerthreshold = -0.2
 		       , const int slope = 0
 		       , const int delay = 0
-		       , const int speed = 1
+		       , const int speed = 0
 		       , const int start = 0
 		       , const int nch = 0);
 

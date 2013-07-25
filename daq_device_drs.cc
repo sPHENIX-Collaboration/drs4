@@ -63,13 +63,14 @@ daq_device_drs::daq_device_drs(const int eventtype
       _nch = 1024 - _start;
     }
 
-  if ( speed != 0.7 
-       && speed != 1.
-       && speed != 2.
-       && speed != 5. )
+  //  cout << __LINE__ << "  " << __FILE__ << " speed  " <<  speed<< endl;
+  if ( speed != 0 
+       && speed != 1
+       && speed != 2
+       && speed != 5 )
     {
-      _speed =1.;
-      cout << "invalid speed, setting 1GS/s"  << endl;
+      _speed = 0;
+      cout << "invalid speed, setting 0.7GS/s"  << endl;
     }
   else
     {
@@ -122,7 +123,7 @@ int  daq_device_drs::init()
 
   b->SetTranspMode(1);
   b->SetInputRange(0);
-  b->EnableTrigger(1,0);              // lemo off, analog trigger on
+  b->EnableTrigger(1,1);              // lemo off, analog trigger on
   b->SetTriggerSource(_trigger);
   b->SetTriggerLevel(_tthreshold, _slope);
   b->SetTriggerDelayNs(_delay);
@@ -244,7 +245,9 @@ void daq_device_drs::identify(std::ostream& os) const
       else os << " positive "; 
       os << " delay " << _delay 
       //      os << " delay " << _delay << " (" << getGS() << "/" << getActualGS() << "GS) "
-	 << " speed " << _speed << " (" << getGS() << "GS) "
+	 << " speed " << _speed << " (" 
+	//	 << getGS() << " ( " << getActualGS() << ") GS) "
+	 << getGS() <<  "GS) "
 	 << " start " << _start << " nch " << _nch;
       os << endl;
 
@@ -254,7 +257,7 @@ void daq_device_drs::identify(std::ostream& os) const
 int daq_device_drs::max_length(const int etype) const
 {
   if (etype != m_eventType) return 0;
-  return  (5*1024 + SEVTHEADERLENGTH + 1);
+  return  (5*1024 + SEVTHEADERLENGTH + 10);
 }
 
 
@@ -283,7 +286,9 @@ double daq_device_drs::getActualGS() const
       //      identify();
       return 0; //  we had a catastrophic failure
     }
-  return b->GetPrecision();
+  double f;
+  b->ReadFrequency(0, &f);
+  return f;
 }
 
 double daq_device_drs::getGS() const

@@ -35,9 +35,6 @@ int drs_plugin::create_device(deviceblock *db)
 	{
 	  int trigger = get_value ( db->argv3);
 
-	  std::cout << __FILE__ << "  " << __LINE__ 
-		    << trigger << " "  
-		    << std::endl;
 
 	  add_readoutdevice ( new daq_device_drs( eventtype,
 					      subid,
@@ -49,11 +46,6 @@ int drs_plugin::create_device(deviceblock *db)
 	{
 	  int trigger = get_value ( db->argv3);
 	  float th = strtof ( db->argv4, 0);
-
-	  std::cout << __FILE__ << "  " << __LINE__ 
-		    << trigger << " "  
-		    << th << "  "
-		    << std::endl;
 
 	  add_readoutdevice ( new daq_device_drs( eventtype,
 					      subid,
@@ -80,13 +72,6 @@ int drs_plugin::create_device(deviceblock *db)
 	    {
 	      slope = get_value ( db->argv5);
 	    }
-	  std::cout << __LINE__ << "  " << db->argv5 << "  " << slope << std::endl;
-
-	  std::cout << __FILE__ << "  " << __LINE__ 
-		    << trigger << " "  
-		    << th << "  "
-		    << slope << "  "
-		    << std::endl;
 
 	  add_readoutdevice ( new daq_device_drs( eventtype,
 					      subid,
@@ -119,12 +104,6 @@ int drs_plugin::create_device(deviceblock *db)
 
 	  int delay = get_value ( db->argv6);
 
-	  // std::cout << __FILE__ << "  " << __LINE__ << "  " 
-	  // 	    << trigger << " "  
-	  // 	    << th << "  "
-	  // 	    << slope << "  "
-	  // 	    << delay << "  "
-	  // 	    << std::endl;
 
 	  add_readoutdevice ( new daq_device_drs( eventtype,
 					      subid,
@@ -152,7 +131,6 @@ int drs_plugin::create_device(deviceblock *db)
 	    {
 	      slope = get_value ( db->argv5);
 	    }
-	  std::cout << __LINE__ << "  " << db->argv5 << "  " << slope << std::endl;
 
 	  int delay = get_value ( db->argv6);
 	  int speed = get_value ( db->argv7);
@@ -183,7 +161,6 @@ int drs_plugin::create_device(deviceblock *db)
 	    {
 	      slope = get_value ( db->argv5);
 	    }
-	  std::cout << __LINE__ << "  " << db->argv5 << "  " << slope << std::endl;
 
 	  int delay = get_value ( db->argv6);
 	  int speed = get_value ( db->argv7);
@@ -216,7 +193,6 @@ int drs_plugin::create_device(deviceblock *db)
 	    {
 	      slope = get_value ( db->argv5);
 	    }
-	  std::cout << __LINE__ << "  " << db->argv5 << "  " << slope << std::endl;
 
 	  int delay = get_value ( db->argv6);
 	  int speed = get_value ( db->argv7);
