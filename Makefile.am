@@ -3,7 +3,10 @@ AUTOMAKE_OPTIONS = foreign
 
 AM_LDFLAGS = -L$(libdir)
 
-INCLUDES = -I$(includedir) 
+WXINCLUDES = $(shell wx-config --cxxflags)
+
+INCLUDES = -I$(includedir) $(WXINCLUDES)
+
 
 include_HEADERS = DRS.h mxml.h musbstd.h strlcpy.h
 
