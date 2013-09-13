@@ -153,7 +153,7 @@ int musb_open(MUSB_INTERFACE **musb_interface, int vendor, int product, int inst
    usb_init();
    usb_find_busses();
    usb_find_devices();
-   usb_set_debug(3);
+   // usb_set_debug(0);
    
    for (bus = usb_get_busses(); bus; bus = bus->next)
       for (dev = bus->devices; dev; dev = dev->next)

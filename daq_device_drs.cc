@@ -41,7 +41,12 @@ daq_device_drs::daq_device_drs(const int eventtype
   _trigger = trigger & 0x1f;
 
   // bit number 5 says if we also provide the system trigger
-  _trigger_handler = (trigger & 0x20 != 0); 
+  if (trigger & 0x20)
+    { 
+      _trigger_handler = 1 ; 
+    }
+
+  //  cout << "** " <<  __FILE__ << " triggerhandler " << _trigger_handler << endl;
 
   _tthreshold = triggerthreshold / 1000. ;
   _slope = slope;
@@ -81,9 +86,9 @@ daq_device_drs::daq_device_drs(const int eventtype
       _speed = speed;
     }
 
-  //  cout << __LINE__ << "  " << __FILE__ << " registering triggerhandler " << endl;
   if ( _trigger_handler )
     {
+      //  cout << __LINE__ << "  " << __FILE__ << " registering triggerhandler " << endl;
       _th  = new drsTriggerHandler (b);
       registerTriggerHandler ( _th);
     }
@@ -253,7 +258,7 @@ void daq_device_drs::identify(std::ostream& os) const
 	//	 << getGS() << " ( " << getActualGS() << ") GS) "
 	 << getGS() <<  "GS) "
 	 << " start " << _start << " nch " << _nch;
-      if (_trigger_handler) os << " * Trigger" ;
+      if (_trigger_handler) os << " *Trigger" ;
       os << endl;
 
     }
