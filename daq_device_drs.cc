@@ -137,6 +137,9 @@ int  daq_device_drs::init()
   b->SetTriggerLevel(_tthreshold, _slope);
   b->SetTriggerDelayNs(_delay);
  
+  // and we trigger rearm with our event type so it takes effect
+  rearm (m_eventType);
+
   return 0;
 
 }
