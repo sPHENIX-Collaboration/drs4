@@ -5,9 +5,11 @@
 
   Contents:     Library functions for DRS mezzanine and USB boards
 
-  $Id: DRS.cpp 20424 2012-11-27 11:34:31Z ritt $
+  $Id: DRS.cpp 21273 2014-02-20 13:01:57Z ritt $
 
 \********************************************************************/
+
+#define NEW_TIMING_CALIBRATION
 
 #ifdef USE_DRS_MUTEX 
 #include "wx/wx.h"    // must be before <windows.h>
@@ -21,6 +23,7 @@
 #include <assert.h>
 #include <algorithm>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include "strlcpy.h"
 #include "DRS.h"
 
@@ -75,8 +78,11 @@ const int REQUIRED_FIRMWARE_VERSION_DRS4 = 15147;
 
 /*---- calibration methods to be stored in EEPROMs -----------------*/
 
-#define VCALIB_METHOD  1
-#define TCALIB_METHOD  1
+#define VCALIB_METHOD_V4 1
+#define TCALIB_METHOD_V4 1
+
+#define VCALIB_METHOD  2
+#define TCALIB_METHOD  2 // correct for sampling frequency, calibrate every channel
 
 /*---- VME addresses -----------------------------------------------*/
 #ifdef HAVE_VME
@@ -163,7 +169,7 @@ DRS::DRS()
 #endif
 
 #if defined(HAVE_VME) || defined(HAVE_USB)
-   int index = 0, i = 0;
+   int index = 0, i=0;
 #endif
 
    memset(fError, 0, sizeof(fError));
@@ -387,6 +393,29 @@ DRS::~DRS()
 
 /*------------------------------------------------------------------*/
 
+void DRS::SortBoards()
+{
+   /* sort boards according to serial number (simple bubble sort) */
+   for (int i=0 ; i<fNumberOfBoards-1 ; i++) {
+      for (int j=i+1 ; j<fNumberOfBoards ; j++) {
+         if (fBoard[i]->GetBoardSerialNumber() < fBoard[j]->GetBoardSerialNumber()) {
+            DRSBoard* b = fBoard[i];
+            fBoard[i] = fBoard[j];
+            fBoard[j] = b;
+         }
+      }
+   }
+}
+
+/*------------------------------------------------------------------*/
+
+void DRS::SetBoard(int i, DRSBoard *b)
+{
+   fBoard[i] = b;
+}
+
+/*------------------------------------------------------------------*/
+
 bool DRS::GetError(char *str, int size)
 {
    if (fError[0])
@@ -432,7 +461,7 @@ DRSBoard::DRSBoard(MUSB_INTERFACE * musb_interface, int usb_slot)
     , fBaseAddress(0)
 #endif
     , fSlotNumber(usb_slot)
-    , fFrequency(0)
+    , fNominalFrequency(0)
     , fMultiBuffer(0)
     , fDominoMode(0)
     , fDominoActive(0)
@@ -465,6 +494,7 @@ DRSBoard::DRSBoard(MUSB_INTERFACE * musb_interface, int usb_slot)
     , fResponseCalibration(0)
     , fVoltageCalibrationValid(false)
     , fCellCalibratedRange(0)
+    , fCellCalibratedTemperature(0)
     , fTimeData(0)
     , fNumberOfTimeData(0)
     , fDebug(0)
@@ -522,7 +552,7 @@ DRSBoard::DRSBoard(MVME_INTERFACE * mvme_interface, mvme_addr_t base_address, in
 , fBaseAddress(base_address)
 , fSlotNumber(slot_number)
 #endif
-, fFrequency(0)
+, fNominalFrequency(0)
 , fRefClock(0)
 , fMultiBuffer(0)
 , fDominoMode(1)
@@ -614,7 +644,7 @@ void DRSBoard::ConstructBoard()
    ReadSerialNumber();
 
    /* set correct reference clock */
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
       fRefClock = 60;
    else
       fRefClock = 33;
@@ -637,9 +667,9 @@ void DRSBoard::ConstructBoard()
    Read(T_CTRL, &fReadPointer, REG_READ_POINTER, 2);
    fADCClkInvert = (bits & BIT_ADCCLK_INVERT) > 0;
    fDominoActive = (bits & BIT_DACTIVE) > 0;
-   ReadFrequency(0, &fFrequency);
-   if (fFrequency < 0.1 || fFrequency > 6)
-      fFrequency = 1;
+   ReadFrequency(0, &fNominalFrequency);
+   if (fNominalFrequency < 0.1 || fNominalFrequency > 6)
+      fNominalFrequency = 1;
 
    /* initialize number of channels */
    if (fDRSType == 4) {
@@ -706,7 +736,7 @@ void DRSBoard::ConstructBoard()
       fDAC_BIAS = 4;
       fDAC_TLEVEL = 5;
       fDAC_ONOFS = 6;
-   } else if (fBoardType == 8) {
+   } else if (fBoardType == 8 || fBoardType == 9) {
       fDAC_ROFS_1 = 0;
       fDAC_TLEVEL4 = 1;
       fDAC_CALN = 2;
@@ -717,11 +747,7 @@ void DRSBoard::ConstructBoard()
       fDAC_TLEVEL3 = 7;
    }
    
-   if (fDRSType == 4) {
-
-      ReadCalibration();
-
-   } else {
+   if (fDRSType < 4) {
       // Response Calibration
       fResponseCalibration = new ResponseCalibration(this);
 
@@ -810,7 +836,7 @@ void DRSBoard::ReadSerialNumber()
 
 void DRSBoard::ReadCalibration(void)
 {
-   unsigned short buf[1024*16];
+   unsigned short buf[1024*16]; // 32 kB
    int i, j, chip;
 
    fVoltageCalibrationValid = false;
@@ -819,29 +845,65 @@ void DRSBoard::ReadCalibration(void)
    memset(fCellOffset,  0, sizeof(fCellOffset));
    memset(fCellGain,    0, sizeof(fCellGain));
    memset(fCellOffset2, 0, sizeof(fCellOffset2));
-   memset(fCellT,       0, sizeof(fCellT));
+   memset(fCellDT,      0, sizeof(fCellDT));
 
    /* read offsets and gain from eeprom */
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 9) {
       memset(buf, 0, sizeof(buf));
-      ReadEEPROM(0, buf, 16);
-
+      ReadEEPROM(0, buf, 4096);
+      
       /* check voltage calibration method */
       if ((buf[2] & 0xFF) == VCALIB_METHOD)
          fVoltageCalibrationValid = true;
       else {
          fCellCalibratedRange = 0;
+         fCellCalibratedTemperature = -100;
          return;
       }
+      
+      /* check timing calibration method */
+      if ((buf[2] >> 8) == TCALIB_METHOD) {
+         float fl; // float from two 16-bit integers
+         memcpy(&fl, &buf[8], sizeof(float));
+         fTimingCalibratedFrequency = fl;
+      } else
+         fTimingCalibratedFrequency = -1;
+      
+      fCellCalibratedRange = ((int) (buf[10] & 0xFF)) / 100.0; // -50 ... +50 => -0.5 V ... +0.5 V
+      fCellCalibratedTemperature = (buf[10] >> 8) / 2.0;
+      
+      ReadEEPROM(1, buf, 1024*32);
+      for (i=0 ; i<8 ; i++)
+         for (j=0 ; j<1024; j++) {
+            fCellOffset[i][j] = buf[(i*1024+j)*2];
+            fCellGain[i][j]   = buf[(i*1024+j)*2 + 1]/65535.0*0.4+0.7;
+         }
+      
+      ReadEEPROM(2, buf, 1024*32);
+      for (i=0 ; i<8 ; i++)
+         for (j=0 ; j<1024; j++)
+            fCellOffset2[i][j]   = buf[(i*1024+j)*2];
+      
+   } else if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+      memset(buf, 0, sizeof(buf));
+      ReadEEPROM(0, buf, 32);
+
+      /* check voltage calibration method */
+      if ((buf[2] & 0xFF) == VCALIB_METHOD_V4) // board < 9 has "1", board 9 has "2"
+         fVoltageCalibrationValid = true;
+      else {
+         fCellCalibratedRange = 0;
+         return;
+      }
+      fCellCalibratedTemperature = -100;
 
       /* check timing calibration method */
-      if ((buf[4] & 0xFF) == TCALIB_METHOD)
-         fTimingCalibratedFrequency = buf[6] / 1000.0; // 0 ... 6000 => 0 ... 6 GHz
-      else
-         fTimingCalibratedFrequency = 0;
+      if ((buf[4] & 0xFF) == TCALIB_METHOD_V4) { // board < 9 has "1", board 9 has "2"
+         fTimingCalibratedFrequency = buf[6] / 1000.0;
+      } else
+         fTimingCalibratedFrequency = -1;
 
       fCellCalibratedRange = ((int) (buf[2] >> 8)) / 100.0; // -50 ... +50 => -0.5 V ... +0.5 V
-
       ReadEEPROM(1, buf, 1024*32);
       for (i=0 ; i<8 ; i++)
          for (j=0 ; j<1024; j++) {
@@ -917,33 +979,85 @@ void DRSBoard::ReadCalibration(void)
       return;
 
    /* read timing calibration from eeprom */
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 9) {
+      if (fTimingCalibratedFrequency == 0) {
+         for (i=0 ; i<8 ; i++)
+            for (j=0 ; j<1024 ; j++) {
+               fCellDT[0][i][j] = 1/fNominalFrequency;
+            }
+      } else {
+         ReadEEPROM(2, buf, 1024*32);
+         for (i=0 ; i<8 ; i++)
+            for (j=0 ; j<1024; j++) {
+               fCellDT[0][i][j]   = (buf[(i*1024+j)*2+1] - 1000) / 10000.0;
+            }
+      }
+   } else if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
       if (fTimingCalibratedFrequency == 0) {
          for (i=0 ; i<1024 ; i++)
-            fCellT[0][i] = 1/fFrequency*i;
+            fCellDT[0][0][i] = 1/fNominalFrequency;
       } else {
          ReadEEPROM(0, buf, 1024*sizeof(short)*2);
-         fCellT[0][0] = 0;
-         for (i=1 ; i<1024; i++)
-            fCellT[0][i] = fCellT[0][i-1] + buf[i*2+1]/10000.0;
+         for (i=0 ; i<8 ; i++) {
+            for (j=0 ; j<1024; j++) {
+               // use calibration for all channels
+               fCellDT[0][i][j] = buf[j*2+1]/10000.0;
+            }
+         }
       }
    } else if (fBoardType == 6) {
       if (fTimingCalibratedFrequency == 0) {
          for (i=0 ; i<1024 ; i++)
             for (j=0 ; j<4 ; j++)
-               fCellT[j][i] = 1/fFrequency*i;
+               fCellDT[0][j][i] = 1/fNominalFrequency;
       } else {
          ReadEEPROM(6, buf, 1024*sizeof(short)*4);
-         for (j=0 ; j<4 ; j++)
-            fCellT[j][0] = 0;
-         for (i=1 ; i<1024; i++) {
-            fCellT[0][i] = fCellT[0][i-1] + buf[i*2]/10000.0;
-            fCellT[1][i] = fCellT[1][i-1] + buf[i*2+1]/10000.0;
-            fCellT[2][i] = fCellT[2][i-1] + buf[i*2+0x800]/10000.0;
-            fCellT[3][i] = fCellT[3][i-1] + buf[i*2+0x800+1]/10000.0;
+         for (i=0 ; i<1024; i++) {
+            fCellDT[0][0][i] = buf[i*2]/10000.0;
+            fCellDT[1][0][i] = buf[i*2+1]/10000.0;
+            fCellDT[2][0][i] = buf[i*2+0x800]/10000.0;
+            fCellDT[3][0][i] = buf[i*2+0x800+1]/10000.0;
          }
       }
    }
+   
+#if 0
+   /* Read Daniel's file */
+   int fh = open("cal_ch2.dat", O_RDONLY);
+   float v;
+   read(fh, &v, sizeof(float));
+   for (i=0 ; i<1024 ; i++) {
+      read(fh, &v, sizeof(float));
+      fCellDT[0][2][(i+0) % 1024] = v;
+   }
+   close(fh);
+   fh = open("cal_ch4.dat", O_RDONLY);
+   read(fh, &v, sizeof(float));
+   for (i=0 ; i<1024 ; i++) {
+      read(fh, &v, sizeof(float));
+      fCellDT[0][6][(i+0)%1024] = v;
+   }
+   close(fh);
+#endif
+
+#if 0
+   /* write timing calibration to EEPROM page 0 */
+   double t1, t2;
+   ReadEEPROM(0, buf, sizeof(buf));
+   for (i=0,t1=0 ; i<1024; i++) {
+      t2 = fCellT[0][i] - t1;
+      t2 = (unsigned short) (t2 * 10000 + 0.5);
+      t1 += t2 / 10000.0;
+      buf[i*2+1] = (unsigned short) t2;
+   }
+   
+   /* write calibration method and frequency */
+   buf[4] = TCALIB_METHOD;
+   buf[6] = (unsigned short) (fNominalFrequency * 1000 + 0.5);
+   fTimingCalibratedFrequency = buf[6] / 1000.0;
+   WriteEEPROM(0, buf, sizeof(buf));
+#endif
+   
 }
 
 /*------------------------------------------------------------------*/
@@ -1819,7 +1933,7 @@ int DRSBoard::Init()
       SetDAC(fDAC_ONOFS, 1.25);
 
       SetDAC(fDAC_BIAS, 0.70);
-   } else if (fBoardType == 8) {
+   } else if (fBoardType == 8 || fBoardType == 9) {
       // DRS4 USB Evaluation 4.0
 
       // set readout offset
@@ -1845,7 +1959,7 @@ int DRSBoard::Init()
       SetChannelConfig(0, fNumberOfReadoutChannels - 1, 12);
 
    // set ADC clock phase
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
       fADCClkPhase = 0;
       fADCClkInvert = 0;
    } else if (fBoardType == 6) {
@@ -1865,17 +1979,21 @@ int DRSBoard::Init()
    fTriggerDelay = 0;
    fTriggerDelayNs = 0;
    fSyncDelay = 0;
-   fFrequency = 1;
+   fNominalFrequency = 1;
    fDominoActive = 1;
+
+   // load calibration from EEPROM
+   ReadCalibration();
 
    // get some settings from hardware
    fRange = GetCalibratedInputRange();
    if (fRange < 0 || fRange > 0.5)
       fRange = 0;
-   fFrequency = GetCalibratedFrequency();
-   if (fFrequency < 0.1 || fFrequency > 6)
-      fFrequency = 1;
+   fNominalFrequency = GetCalibratedFrequency();
+   if (fNominalFrequency < 0.1 || fNominalFrequency > 6)
+      fNominalFrequency = 1;
 
+   
    if (fHasMultiBuffer) {
       SetMultiBuffer(fMultiBuffer);
       SetMultiBufferRP(fReadPointer);
@@ -1887,9 +2005,9 @@ int DRSBoard::Init()
    SetTriggerDelayPercent(0);
    SetSyncDelay(fSyncDelay);
    SetDominoActive(fDominoActive);
-   SetFrequency(fFrequency, true);
+   SetFrequency(fNominalFrequency, true);
    SetInputRange(fRange);
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
       SelectClockSource(0); // FPGA clock
    if (fBoardType == 6) {
       SetADCClkPhase(fADCClkPhase, fADCClkInvert);
@@ -1901,6 +2019,7 @@ int DRSBoard::Init()
    // disable calibration signals
    EnableAcal(0, 0);
    SetCalibTiming(0, 0);
+   EnableTcal(0);
 
    // got to idle state
    Reinit();
@@ -2026,35 +2145,65 @@ int DRSBoard::SetDelayedTrigger(int flag)
 
 /*------------------------------------------------------------------*/
 
-int DRSBoard::SetTriggerLevel(double voltage, bool negative)
+int DRSBoard::SetTriggerPolarity(bool negative)
 {
    if (fBoardType == 5 || fBoardType == 7) {
       fTcalLevel = negative;
-
+      
       if (negative)
          fCtrlBits |= BIT_NEG_TRIGGER;
       else
          fCtrlBits &= ~BIT_NEG_TRIGGER;
-
+      
       Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
-
-      return SetDAC(fDAC_TLEVEL, voltage/2 + 0.8);
-   } else if (fBoardType == 8) {
+      
+      return 1;
+   } else if (fBoardType == 8 || fBoardType == 9) {
       fTcalLevel = negative;
-
+      
       if (negative)
          fCtrlBits |= BIT_NEG_TRIGGER;
       else
          fCtrlBits &= ~BIT_NEG_TRIGGER;
-
+      
       Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
+      return 1;
+   }
+   
+   return 0;
+}
 
-      SetDAC(fDAC_TLEVEL1, voltage/2 + 0.8);
-      SetDAC(fDAC_TLEVEL2, voltage/2 + 0.8);
-      SetDAC(fDAC_TLEVEL3, voltage/2 + 0.8);
-      return SetDAC(fDAC_TLEVEL4, voltage/2 + 0.8);
+/*------------------------------------------------------------------*/
+
+int DRSBoard::SetTriggerLevel(double voltage)
+{
+   if (fBoardType == 5 || fBoardType == 7) {
+      return SetDAC(fDAC_TLEVEL, voltage/2 + 0.8);
+   } else if (fBoardType == 8 || fBoardType == 9) {
+      SetIndividualTriggerLevel(0, voltage);
+      SetIndividualTriggerLevel(1, voltage);
+      SetIndividualTriggerLevel(2, voltage);
+      SetIndividualTriggerLevel(3, voltage);
+      return 1;
    }
 
+   return 0;
+}
+
+/*------------------------------------------------------------------*/
+
+int DRSBoard::SetIndividualTriggerLevel(int channel, double voltage)
+{
+   if (fBoardType == 8 || fBoardType == 9) {
+      switch (channel) {
+            case 0: SetDAC(fDAC_TLEVEL1, voltage/2 + 0.8); break;
+            case 1: SetDAC(fDAC_TLEVEL2, voltage/2 + 0.8); break;
+            case 2: SetDAC(fDAC_TLEVEL3, voltage/2 + 0.8); break;
+            case 3: SetDAC(fDAC_TLEVEL4, voltage/2 + 0.8); break;
+         default: return -1;
+      }
+   }
+   
    return 0;
 }
 
@@ -2066,7 +2215,7 @@ int DRSBoard::SetTriggerDelayPercent(int delay)
    short ticks, reg;
    fTriggerDelay = delay;
 
-   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
       // convert delay (0..100) into ticks
       ticks = (unsigned short) (delay/100.0*255+0.5);
       if (ticks > 255)
@@ -2075,11 +2224,11 @@ int DRSBoard::SetTriggerDelayPercent(int delay)
          ticks = 0;
 
       // convert delay into ns
-      if (fBoardType == 7 || fBoardType == 8) {
+      if (fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
          if (fFirmwareVersion >= 17147)
-            fTriggerDelayNs = ticks * 4.427; // Spartan 3 Octal LUTs
+            fTriggerDelayNs = ticks * 4.8;  // Spartan 3 Octal LUTs
          else
-            fTriggerDelayNs = ticks * 2.05; // Spartan 3 Quad LUTs
+            fTriggerDelayNs = ticks * 2.1;  // Spartan 3 Quad LUTs
       } else {
          if (fFirmwareVersion >= 17382)
             fTriggerDelayNs = ticks * 4.6;  // Virtex PRO II Octal LUTs
@@ -2088,7 +2237,7 @@ int DRSBoard::SetTriggerDelayPercent(int delay)
       }
 
       // adjust for fixed delay, measured and approximated experimentally
-      fTriggerDelayNs += 21 + 28/fFrequency; 
+      fTriggerDelayNs += 21 + 28/fNominalFrequency;
 
       Read(T_CTRL, &reg, REG_TRG_DELAY, 2);
       reg = (reg & 0xFF00) | ticks;
@@ -2108,14 +2257,14 @@ int DRSBoard::SetTriggerDelayNs(int delay)
    short ticks, reg;
    fTriggerDelayNs = delay;
 
-   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
 
       // convert delay in ns into ticks
-      if (fBoardType == 7 || fBoardType == 8) {
+      if (fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
          if (fFirmwareVersion >= 17147)
-            ticks = (short int)(delay / 4.427 + 0.5); // Spartan 3 Octal LUTs
+            ticks = (short int)(delay / 4.8 + 0.5);  // Spartan 3 Octal LUTs
          else
-            ticks = (short int)(delay / 2.05 + 0.5);  // Spartan 3 Quad LUTs
+            ticks = (short int)(delay / 2.1 + 0.5);  // Spartan 3 Quad LUTs
       } else {
          if (fFirmwareVersion >= 17382)
             ticks = (short int)(delay / 4.6 + 0.5);  // Virtex PRO II Octal LUTs
@@ -2146,7 +2295,7 @@ int DRSBoard::SetSyncDelay(int ticks)
 {
    short int reg;
 
-   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
       Read(T_CTRL, &reg, REG_TRG_DELAY, 2);
       reg = (reg & 0xFF) | (ticks << 8);
       Write(T_CTRL, REG_TRG_DELAY, &reg, 2);
@@ -2163,6 +2312,7 @@ int DRSBoard::SetTriggerSource(int source)
 {
    short int reg;
 
+   fTriggerSource = source;
    if (fBoardType == 5 || fBoardType == 7) {
       // Set trigger source 
       // 0=CH1, 1=CH2, 2=CH3, 3=CH4
@@ -2176,7 +2326,7 @@ int DRSBoard::SetTriggerSource(int source)
          fCtrlBits &= ~BIT_TR_SOURCE2;
 
       Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
-   } else if (fBoardType == 8) {
+   } else if (fBoardType == 8 || fBoardType == 9) {
       // Set trigger configuration
       // OR  0=CH1, 1=CH2, 2=CH3, 3=CH4, 4=EXT
       // AND 8=CH1, 9=CH2, 10=CH3, 11=CH4, 12=EXT
@@ -2320,7 +2470,7 @@ int DRSBoard::ReadFrequency(unsigned char chipIndex, double *f)
    if (fDRSType == 4) {
 
       if (fBoardType == 6) {
-         *f = fFrequency;
+         *f = fNominalFrequency;
          return 1;
       }
 
@@ -2434,7 +2584,7 @@ int DRSBoard::ConfigureLMK(double sampFreq, bool freqChange, int calFreq, int ca
    divider = (int) ((vco / vco_divider / (sampFreq/2.048) / 2.0) + 0.5);
 
    /* return exact frequency */
-   fFrequency = vco/vco_divider/(divider*2)*2.048;
+   fNominalFrequency = vco/vco_divider/(divider*2)*2.048;
 
    /* return exact timing calibration frequency */
    fTCALFrequency = vco/vco_divider;
@@ -2545,16 +2695,16 @@ int DRSBoard::SetFrequency(double demand, bool wait)
       /* convert rounded ticks back to frequency */
       if (demand > 0)
          demand = 1.024 / ticks * fRefClock;
-      fFrequency = demand;
+      fNominalFrequency = demand;
 
-      /* wait for PLL lock if asekd */
+      /* wait for PLL lock if asked */
       if (wait) {
          StartDomino();
          for (i=0 ; i<1000 ; i++)
-         if (GetStatusReg() & BIT_PLL_LOCKED0)
-            break;
+            if (GetStatusReg() & BIT_PLL_LOCKED0)
+               break;
          SoftTrigger();
-         if (i==100) {
+         if (i == 1000) {
             printf("PLL did not lock for frequency %lf\n", demand);
             return 0;
          }
@@ -2564,7 +2714,7 @@ int DRSBoard::SetFrequency(double demand, bool wait)
       EnableTrigger(0, 0);
       EnableAcal(0, 0);
 
-      fFrequency = demand;
+      fNominalFrequency = demand;
 
       /* turn automatic adjustment off */
       fCtrlBits &= ~BIT_FREQ_AUTO_ADJ;
@@ -2674,7 +2824,7 @@ int DRSBoard::RegulateFrequency(double demand)
    if (demand < 0.42 || demand > 5.2)
       return 0;
 
-   fFrequency = demand;
+   fNominalFrequency = demand;
 
    /* first iterate DAC value from host */
    if (!SetFrequency(demand, true))
@@ -3005,7 +3155,7 @@ void DRSBoard::SetVoltageOffset(double offset1, double offset2)
 
 int DRSBoard::SetInputRange(double center)
 {
-   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
       // DRS4 USB Evaluation Boards + Mezzanine Board
 
       // only allow -0.5...0.5 to 0...1.0
@@ -3174,7 +3324,7 @@ int DRSBoard::TransferWaves(unsigned char *p, int firstChannel, int lastChannel)
    else if (fTransport == TR_USB2) {
       /* USB2 FPGA contains 9 (Eval) or 10 (Mezz) channels */
       firstChannel = 0;
-      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
          lastChannel = 8;
       else if (fBoardType == 6)
          lastChannel = 9;
@@ -3193,7 +3343,7 @@ int DRSBoard::TransferWaves(unsigned char *p, int firstChannel, int lastChannel)
    if (fBoardType == 6 && fFirmwareVersion >= 17147)
       n_requested += 16; // add trailer four chips
       
-   if ((fBoardType == 7  || fBoardType == 8) && fFirmwareVersion >= 17147)
+   if ((fBoardType == 7  || fBoardType == 8 || fBoardType == 9) && fFirmwareVersion >= 17147)
       n_requested += 4;  // add trailer one chip   
 
    if (fMultiBuffer)
@@ -3211,8 +3361,8 @@ int DRSBoard::TransferWaves(unsigned char *p, int firstChannel, int lastChannel)
 
    // read trigger cells
    if (fDRSType == 4) {
-      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
-         if ((fBoardType == 7  || fBoardType == 8) && fFirmwareVersion >= 17147) {
+      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
+         if ((fBoardType == 7  || fBoardType == 8 || fBoardType == 9) && fFirmwareVersion >= 17147) {
             // new code reading trailer
             ptr = p + n_requested - 4;
             fStopCell[0] = *((unsigned short *)(ptr));
@@ -3307,7 +3457,7 @@ int DRSBoard::DecodeWave(unsigned char *waveforms, unsigned int chipIndex, unsig
       }
    } else if (fTransport == TR_USB2) {
 
-      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
          // see dpram_map_eval1.xls
          offset = kNumberOfBins * 2 * (chipIndex * 16 + channel);
       else if (fBoardType == 6) {
@@ -3316,7 +3466,7 @@ int DRSBoard::DecodeWave(unsigned char *waveforms, unsigned int chipIndex, unsig
       }
       for (i = 0; i < kNumberOfBins; i++) {
          // 16-bit data
-         if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+         if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
             waveform[i] = ((waveforms[i * 2 + 1 + offset] & 0xff) << 8) + waveforms[i * 2 + offset];
          else if (fBoardType == 6)
             waveform[i] = ((waveforms[i * 4 + 1 + offset] & 0xff) << 8) + waveforms[i * 4 + offset];
@@ -3355,7 +3505,7 @@ int DRSBoard::DecodeWave(unsigned char *waveforms, unsigned int chipIndex, unsig
 
 int DRSBoard::GetWave(unsigned int chipIndex, unsigned char channel, float *waveform)
 {
-   return GetWave(chipIndex, channel, waveform, true, fStopCell[chipIndex], false, 0, true);
+   return GetWave(chipIndex, channel, waveform, true, fStopCell[chipIndex], -1, false, 0, true);
 }
 
 /*------------------------------------------------------------------*/
@@ -3392,7 +3542,7 @@ int DRSBoard::GetWave(unsigned char *waveforms, unsigned int chipIndex, unsigned
          waveform[i] = static_cast < float >(static_cast <short> (waveS[i]) * GetPrecision());
    else {
       for (i = 0; i < fChannelDepth ; i++) {
-         if (fBoardType == 4 || fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
+         if (fBoardType == 4 || fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
             waveform[i] = static_cast < float >(waveS[i] * GetPrecision());
          } else
             waveform[i] = static_cast < float >(waveS[i]);
@@ -3443,7 +3593,7 @@ int DRSBoard::GetWave(unsigned char *waveforms, unsigned int chipIndex, unsigned
 
 
       // combine two halfs correctly, see 2048_mode.ppt
-      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+      if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
          if ((wsr == 0 && triggerCell < 767) ||
              (wsr == 1 && triggerCell >= 767)) {
             for (i=0 ; i<kNumberOfBins-triggerCell ; i++)
@@ -3957,20 +4107,29 @@ int DRSBoard::EnableTcal(int freq, int level, int phase)
    fTcalPhase = phase;
 
    if (fBoardType == 6) {
-      ConfigureLMK(fFrequency, false, freq, phase);
+      ConfigureLMK(fNominalFrequency, false, freq, phase);
    } else {
-      // Enable clock channel
-      if (freq)
-         fCtrlBits |= BIT_TCAL_EN;
-      else
-         fCtrlBits &= ~BIT_TCAL_EN;
-
-      // Set output level, needed for gain calibration
-      if (fDRSType == 4) {
-         if (level)
-            fCtrlBits |= BIT_NEG_TRIGGER;
+      if (fBoardType == 9) {
+         // Enable clock a switch channel multiplexers
+         if (freq) {
+            fCtrlBits |= (BIT_TCAL_EN | BIT_ACAL_EN);
+         } else
+            fCtrlBits &= ~(BIT_TCAL_EN | BIT_ACAL_EN);
+         
+      } else {
+         // Enable clock channel
+         if (freq)
+            fCtrlBits |= BIT_TCAL_EN;
          else
-            fCtrlBits &= ~BIT_NEG_TRIGGER;
+            fCtrlBits &= ~(BIT_TCAL_EN | BIT_TCAL_SOURCE);
+         
+         // Set output level, needed for gain calibration
+         if (fDRSType == 4) {
+            if (level)
+               fCtrlBits |= BIT_NEG_TRIGGER;
+            else
+               fCtrlBits &= ~BIT_NEG_TRIGGER;
+         }
       }
 
       Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
@@ -3987,12 +4146,14 @@ int DRSBoard::SelectClockSource(int source)
 
    // Select clock source:
    // EVAL1: synchronous (0) or asynchronous (1) (2nd quartz)
-   if (source) 
-      fCtrlBits |= BIT_TCAL_SOURCE;
-   else
-      fCtrlBits &= ~BIT_TCAL_SOURCE;
-
-   Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
+   if (fBoardType <= 8) {
+      if (source)
+         fCtrlBits |= BIT_TCAL_SOURCE;
+      else
+         fCtrlBits &= ~BIT_TCAL_SOURCE;
+      
+      Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
+   }
 
    return 1;
 }
@@ -4007,7 +4168,7 @@ int DRSBoard::SetRefclk(int source)
          fCtrlBits |= BIT_REFCLK_SOURCE;
       else
          fCtrlBits &= ~BIT_REFCLK_SOURCE;
-   } else if (fBoardType == 8) {
+   } else if (fBoardType == 8 || fBoardType == 9) {
       if (source) 
          fCtrlBits |= BIT_REFCLK_EXT;
       else
@@ -4037,7 +4198,7 @@ int DRSBoard::EnableAcal(int mode, double voltage)
          SetDAC(fDAC_CALP, 0);
          SetDAC(fDAC_CALN, 0);
       }
-      if (fBoardType == 7 || fBoardType == 8)
+      if (fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
          SetCalibVoltage(0);
 
       fCtrlBits &= ~BIT_ACAL_EN;
@@ -4062,9 +4223,9 @@ int DRSBoard::EnableAcal(int mode, double voltage)
       Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
 
       /* calculate duration of DENABLE signal as 1.2 revolutions */
-      t1 = 1 / fFrequency * 1024 * 1.2; // ns
+      t1 = 1 / fNominalFrequency * 1024 * 1.2; // ns
       t1 = static_cast < int >((t1 - 30) / 30 + 1);     // 30 ns offset, 30 ns units, rounded up
-      t2 = 1 / fFrequency * 1024 * 0.1; // ns
+      t2 = 1 / fNominalFrequency * 1024 * 0.1; // ns
       t2 = static_cast < int >((t2 - 30) / 30 + 1);     // 30 ns offset, 30 ns units, rounded up
       SetCalibTiming(static_cast < int >(t1), static_cast < int >(t2));
 
@@ -4081,7 +4242,7 @@ int DRSBoard::EnableAcal(int mode, double voltage)
       Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
 
       /* calculate duration of DENABLE signal as 1.1 revolutions */
-      t1 = 1 / fFrequency * 1024 * 1.05;        // ns
+      t1 = 1 / fNominalFrequency * 1024 * 1.05;        // ns
       t1 = static_cast < int >((t1 - 30) / 30 + 1);     // 30 ns offset, 30 ns units, rounded up
       SetCalibTiming(static_cast < int >(t1), 0);
    }
@@ -4113,11 +4274,11 @@ int DRSBoard::SetCalibTiming(int t_enable, int t_cal)
 int DRSBoard::SetCalibVoltage(double value)
 {
    // Set Calibration Voltage
-   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 5 || fBoardType == 6 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
       if (fBoardType == 5)
-         value = value * (1+fFrequency/65); // rough correction factor for input current
-      if (fBoardType == 7 || fBoardType == 8)
-         value = value * (1+fFrequency/47); // rough correction factor for input current
+         value = value * (1+fNominalFrequency/65); // rough correction factor for input current
+      if (fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
+         value = value * (1+fNominalFrequency/47); // rough correction factor for input current
       SetDAC(fDAC_CALP, fCommonMode + value / 2);
       SetDAC(fDAC_CALN, fCommonMode - value / 2);
    } else
@@ -4195,6 +4356,32 @@ int DRSBoard::GetTriggerBus()
    return static_cast < int >(fTriggerBus);
 }
 
+
+/*------------------------------------------------------------------*/
+
+unsigned int DRSBoard::GetScaler(int channel)
+{
+   int reg;
+   unsigned d;
+   
+   if (fBoardType < 9 || fFirmwareVersion < 21000 || fTransport != TR_USB2)
+      return 0;
+   
+   switch (channel ) {
+      case 0: reg = REG_SCALER0; break;
+      case 1: reg = REG_SCALER1; break;
+      case 2: reg = REG_SCALER2; break;
+      case 3: reg = REG_SCALER3; break;
+      case 4: reg = REG_SCALER4; break;
+      case 5: reg = REG_SCALER5; break;
+   }
+   
+   Read(T_STATUS, &d, reg, 4);
+
+   return static_cast < unsigned int >(d * 10); // measurement clock is 10 Hz
+}
+
+
 /*------------------------------------------------------------------*/
 
 int DRSBoard::SetBoardSerialNumber(unsigned short serialNumber)
@@ -4255,7 +4442,7 @@ int DRSBoard::ReadEEPROM(unsigned short page, void *buffer, int size)
    int i;
    unsigned long status;
    // write eeprom page number
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
       Write(T_CTRL, REG_EEPROM_PAGE_EVAL, &page, 2);
    else if (fBoardType == 6)
       Write(T_CTRL, REG_EEPROM_PAGE_MEZZ, &page, 2);
@@ -4284,9 +4471,16 @@ int DRSBoard::WriteEEPROM(unsigned short page, void *buffer, int size)
 {
    int i;
    unsigned long status;
+   unsigned char buf[32768];
 
+   // read previous page
+   ReadEEPROM(page, buf, sizeof(buf));
+   
+   // combine with new page
+   memcpy(buf, buffer, size);
+   
    // write eeprom page number
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
       Write(T_CTRL, REG_EEPROM_PAGE_EVAL, &page, 2);
    else if (fBoardType == 6)
       Write(T_CTRL, REG_EEPROM_PAGE_MEZZ, &page, 2);
@@ -4294,7 +4488,7 @@ int DRSBoard::WriteEEPROM(unsigned short page, void *buffer, int size)
       return -1;
 
    // write eeprom page to RAM
-   Write(T_RAM, 0, buffer, size);
+   Write(T_RAM, 0, buf, size);
 
    // execute eeprom write
    fCtrlBits |= BIT_EEPROM_WRITE_TRIG;
@@ -4316,56 +4510,83 @@ int DRSBoard::WriteEEPROM(unsigned short page, void *buffer, int size)
 
 bool DRSBoard::IsTimingCalibrationValid()
 {
-   return fabs(fFrequency - fTimingCalibratedFrequency) < 0.001;
+   return fabs(fNominalFrequency - fTimingCalibratedFrequency) < 0.001;
+}
+
+double DRSBoard::GetTrueFrequency()
+{
+   int i;
+   double f;
+   
+   if (IsTimingCalibrationValid()) {
+      /* calculate true frequency */
+      for (i=0,f=0 ; i<1024 ; i++)
+         f += fCellDT[0][0][i];
+      f = 1024.0 / f;
+   } else
+      f = fNominalFrequency;
+   
+   return f;
 }
 
 /*------------------------------------------------------------------*/
 
-int DRSBoard::GetTime(unsigned int chipIndex, int tc, float *time, bool tcalibrated, bool rotated)
+int DRSBoard::GetTime(unsigned int chipIndex, int channelIndex, int tc, float *time, bool tcalibrated, bool rotated)
 {
-   int i, scale;
+   int i, scale, iend;
+   double gt0, gt;
 
    /* for DRS2, please use function below */
    if (fDRSType < 4)
-      return GetTime(chipIndex, fFrequency, tc, time, tcalibrated, rotated);
+      return GetTime(chipIndex, channelIndex, fNominalFrequency, tc, time, tcalibrated, rotated);
 
    scale = fDecimation ? 2 : 1;
 
    if (!IsTimingCalibrationValid() || !tcalibrated) {
-      double t0 = tc / fFrequency;
+      double t0 = tc / fNominalFrequency;
       for (i = 0; i < fChannelDepth; i++) {
          if (rotated)
-            time[i] = static_cast < float >(((i*scale+tc) % kNumberOfBins) / fFrequency - t0);
+            time[i] = static_cast < float >(((i*scale+tc) % kNumberOfBins) / fNominalFrequency - t0);
          else
-            time[i] = static_cast < float >((i*scale) / fFrequency);
+            time[i] = static_cast < float >((i*scale) / fNominalFrequency);
          if (time[i] < 0)
-            time[i] += static_cast < float > (kNumberOfBins / fFrequency);
+            time[i] += static_cast < float > (kNumberOfBins / fNominalFrequency);
          if (i*scale >= kNumberOfBins)
-            time[i] += static_cast < float > (kNumberOfBins / fFrequency);
+            time[i] += static_cast < float > (kNumberOfBins / fNominalFrequency);
       }
       return 1;
    }
 
-   double t0 = fCellT[chipIndex][tc];
-
-   for (i=0 ; i<fChannelDepth ; i++) {
+   time[0] = 0;
+   for (i=1 ; i<fChannelDepth ; i++) {
       if (rotated)
-         time[i] = static_cast < float > (fCellT[chipIndex][(i*scale+tc) % kNumberOfBins] - t0);
+         time[i] = time[i-1] + (float)fCellDT[chipIndex][channelIndex][(i-1+tc) % kNumberOfBins];
       else
-         time[i] = static_cast < float > (fCellT[chipIndex][(i*scale) % kNumberOfBins]);
-      if (time[i] < 0)
-         time[i] += static_cast < float > (kNumberOfBins / fFrequency);
-      if (i*scale >= kNumberOfBins)
-         time[i] += static_cast < float > (kNumberOfBins / fFrequency);
+         time[i] = time[i-1] + (float)fCellDT[chipIndex][channelIndex][(i-1) % kNumberOfADCBins];
    }
+
+   if (channelIndex > 0) {
+      // correct all channels to channel 0 (Daniel's method)
+      iend = tc >= 700 ? 700+1024 : 700;
+      for (i=tc,gt0=0 ; i<iend ; i++)
+         gt0 += fCellDT[chipIndex][0][i % 1024];
+      
+      for (i=tc,gt=0 ; i<iend ; i++)
+         gt += fCellDT[chipIndex][channelIndex][i % 1024];
+      
+      for (i=0 ; i<fChannelDepth ; i++)
+         time[i] += (float)(gt0 - gt);
+   }
+      
    return 1;
 }
 
 /*------------------------------------------------------------------*/
 
-int DRSBoard::GetTimeCalibration(unsigned int chipIndex, int mode, float *time, bool force)
+int DRSBoard::GetTimeCalibration(unsigned int chipIndex, int channelIndex, int mode, float *time, bool force)
 {
    int i;
+   float tint;
 
    /* not implemented for DRS2 */
    if (fDRSType < 4)
@@ -4373,19 +4594,20 @@ int DRSBoard::GetTimeCalibration(unsigned int chipIndex, int mode, float *time, 
 
    if (!force && !IsTimingCalibrationValid()) {
       for (i = 0; i < kNumberOfBins; i++)
-         time[i] = 0;
+         time[i] = 1/fNominalFrequency;
       return 1;
    }
 
    if (mode == 0) {
       /* differential nonlinearity */
-      for (i=1 ; i<kNumberOfBins ; i++)
-         time[i] = static_cast < float > (fCellT[chipIndex][i] - fCellT[chipIndex][i-1]);
-      time[0] = static_cast < float > (1.0/fFrequency);
+      for (i=0 ; i<kNumberOfBins ; i++)
+         time[i] = static_cast < float > (fCellDT[chipIndex][channelIndex][i]);
    } else {
       /* integral nonlinearity */
-      for (i=0 ; i<kNumberOfBins ; i++)
-         time[i] = static_cast < float > (fCellT[chipIndex][i] - i/fFrequency);
+      for (i=0,tint=0; i<kNumberOfBins ; i++) {
+         time[i] = static_cast < float > (tint - i/fNominalFrequency);
+         tint += (float)fCellDT[chipIndex][channelIndex][i];
+      }
    }
 
    return 1;
@@ -4393,11 +4615,11 @@ int DRSBoard::GetTimeCalibration(unsigned int chipIndex, int mode, float *time, 
 
 /*------------------------------------------------------------------*/
 
-int DRSBoard::GetTime(unsigned int chipIndex, double freqGHz, int tc, float *time, bool tcalibrated, bool rotated)
+int DRSBoard::GetTime(unsigned int chipIndex, int channelIndex, double freqGHz, int tc, float *time, bool tcalibrated, bool rotated)
 {
    /* for DRS4, use function above */
    if (fDRSType == 4)
-      return GetTime(chipIndex, tc, time, tcalibrated, rotated);
+      return GetTime(chipIndex, channelIndex, tc, time, tcalibrated, rotated);
 
    int i, irot;
    DRSBoard::TimeData * init;
@@ -4408,7 +4630,7 @@ int DRSBoard::GetTime(unsigned int chipIndex, double freqGHz, int tc, float *tim
 
    if (init == NULL) {
       for (i = 0; i < kNumberOfBins; i++)
-         time[i] = static_cast < float >(i / fFrequency);
+         time[i] = static_cast < float >(i / fNominalFrequency);
       return 1;
    }
    freq = NULL;
@@ -4420,19 +4642,19 @@ int DRSBoard::GetTime(unsigned int chipIndex, double freqGHz, int tc, float *tim
    }
    if (freq == NULL) {
       for (i = 0; i < kNumberOfBins; i++)
-         time[i] = static_cast < float >(i / fFrequency);
+         time[i] = static_cast < float >(i / fNominalFrequency);
       return 1;
    }
    for (i = 0; i < kNumberOfBins; i++) {
       irot = (fStopCell[chipIndex] + i) % kNumberOfBins;
       if (fStopCell[chipIndex] + i < kNumberOfBins)
-         time[i] = static_cast < float >((freq->fBin[irot] - freq->fBin[fStopCell[chipIndex]]) / fFrequency);
+         time[i] = static_cast < float >((freq->fBin[irot] - freq->fBin[fStopCell[chipIndex]]) / fNominalFrequency);
       else
       time[i] =
           static_cast <
           float
           >((freq->fBin[irot] - freq->fBin[fStopCell[chipIndex]] + freq->fBin[kNumberOfBins - 1] - 2 * freq->fBin[0] +
-             freq->fBin[1]) / fFrequency);
+             freq->fBin[1]) / fNominalFrequency);
    }
    return 1;
 }
@@ -4566,28 +4788,8 @@ void DRSBoard::ReadSingleWaveform(int nChip, int nChan,
    }
 }
       
-#define WFH_SIZE 100
-
-static unsigned short wfh[kNumberOfChipsMax][kNumberOfChannelsMax][kNumberOfBins][WFH_SIZE];
-static float weight[] = { 
-   0.1f,
-   0.2f,
-   0.4f,
-   0.6f,
-   0.8f,
-   1.0f,
-   1.0f,
-   1.0f,
-   0.8f,
-   0.6f,
-   0.4f,
-   0.2f,
-   0.1f,
-};
 static unsigned short swf[kNumberOfChipsMax][kNumberOfChannelsMax][kNumberOfBins];
-static unsigned short htmp[WFH_SIZE];
 static float          center[kNumberOfChipsMax][kNumberOfChannelsMax][kNumberOfBins];
-static int            icenter[kNumberOfChipsMax][kNumberOfChannelsMax][kNumberOfBins];
 
 int DRSBoard::AverageWaveforms(DRSCallback *pcb, int nChip, int nChan, 
                                int prog1, int prog2, unsigned short *awf, int n, bool rotated)
@@ -4636,51 +4838,20 @@ int DRSBoard::RobustAverageWaveforms(DRSCallback *pcb, int nChip, int nChan,
                                int prog1, int prog2, unsigned short *awf, int n, bool rotated)
 {
    int i, j, k, l, prog, old_prog = 0;
-   int nw, bin, max, imax;
-   float mean, norm;
 
    if (pcb != NULL)
       pcb->Progress(prog1);
 
-   memset(wfh, 0, sizeof(wfh));
-   memset(center, 0, sizeof(center));
-
-   /* obtain center of histograms */
-   for (i=0 ; i<10 ; i++) {
-      ReadSingleWaveform(nChip, nChan, swf, rotated);
-      for (j=0 ; j<nChip ; j++)
-         for (k=0 ; k<nChan ; k++)
-            for (l=0 ; l<kNumberOfBins ; l++) {
-               center[j][k][l] += swf[j][k][l]/10.0f;
-            }
-
-      /* update progress bar */
-      prog = (int)(((double)i/(n+10))*(prog2-prog1)+prog1);
-      if (prog > old_prog) {
-         old_prog = prog;
-         if (pcb != NULL)
-            pcb->Progress(prog);
-      }
-   }
-   for (j=0 ; j<nChip ; j++)
-      for (k=0 ; k<nChan ; k++)
-         for (l=0 ; l<kNumberOfBins ; l++)
-            icenter[j][k][l] = (int)(center[j][k][l]/16+0.5)*16;
-
+   Averager *ave = new Averager(nChip, nChan, kNumberOfBins, 200);
+                                
    /* fill histograms */
    for (i=0 ; i<n ; i++) {
       ReadSingleWaveform(nChip, nChan, swf, rotated);
       for (j=0 ; j<nChip ; j++)
          for (k=0 ; k<nChan ; k++)
-            for (l=0 ; l<kNumberOfBins ; l++) {
-               bin = (swf[j][k][l]-icenter[j][k][l])/16+WFH_SIZE/2;
-               if (bin < 0)
-                  bin = 0;
-               if (bin > WFH_SIZE-1)
-                  bin = WFH_SIZE-1;
-               wfh[j][k][l][bin]++;
-            }
-
+            for (l=0 ; l<kNumberOfBins ; l++)
+               ave->Add(j, k, l, swf[j][k][l]);
+               
       /* update progress bar */
       prog = (int)(((double)(i+10)/(n+10))*(prog2-prog1)+prog1);
       if (prog > old_prog) {
@@ -4700,49 +4871,13 @@ int DRSBoard::RobustAverageWaveforms(DRSCallback *pcb, int nChip, int nChan,
    fclose(fh);
    */
 
-   /* shift histograms to center */
-   for (i=0 ; i<nChip ; i++) {
-      for (j=0 ; j<nChan ; j++) {
-         for (k=0 ; k<kNumberOfBins ; k++) {
-            max = imax = 0;
-            for (l=0 ; l<WFH_SIZE ; l++) {
-               if (wfh[i][j][k][l] > max) {
-                  max = wfh[i][j][k][l];
-                  imax = l;
-               }
-            }
-            for (l=0 ; l<WFH_SIZE ; l++) {
-               bin = l+imax-WFH_SIZE/2;
-               if (bin < 0 || bin > WFH_SIZE-1)
-                  htmp[l] = 0;
-               else
-                  htmp[l] = wfh[i][j][k][bin];
-            }
-            for (l=0 ; l<WFH_SIZE ; l++)
-               wfh[i][j][k][l] = htmp[l];
-            icenter[i][j][k] += (imax-WFH_SIZE/2)*16;
-         }
-      }
-   }
+   for (i=0 ; i<nChip ; i++)
+      for (j=0 ; j<nChan ; j++)
+         for (k=0 ; k<kNumberOfBins ; k++)
+            awf[(i*nChan+j)*kNumberOfBins+k] = (unsigned short)ave->RobustAverage(100, i, j, k);
 
-   /* do a weighted average */
-   nw = sizeof(weight)/sizeof(float);
-   for (i=0 ; i<nChip ; i++) {
-      for (j=0 ; j<nChan ; j++) {
-         for (k=0 ; k<kNumberOfBins ; k++) {
-            mean = norm = 0;
-            for (l=0 ; l<nw ; l++) {
-               mean += wfh[i][j][k][WFH_SIZE/2 + l-nw/2] * weight[l] * (icenter[i][j][k] + (l-nw/2)*16);
-               norm += wfh[i][j][k][WFH_SIZE/2 + l-nw/2] * weight[l];
-            }
-            if (norm == 0)
-               awf[(i*nChan+j)*kNumberOfBins+k] = 0;
-            else
-               awf[(i*nChan+j)*kNumberOfBins+k] = (unsigned short) (mean/norm+0.5);
-         }
-      }
-   }
-
+   ave->SaveNormalizedDistribution("wv.csv", 0, 100);
+   
    /*
    FILE *fh = fopen("calib.csv", "wt");
    for (i=40 ; i<60 ; i++) {
@@ -4757,6 +4892,8 @@ int DRSBoard::RobustAverageWaveforms(DRSCallback *pcb, int nChip, int nChan,
 
    if (pcb != NULL)
       pcb->Progress(prog2);
+   
+   delete ave;
 
    return 1;
 }
@@ -4782,9 +4919,9 @@ int DRSBoard::CalibrateVolt(DRSCallback *pcb)
 {
 int    i, j, nChan, timingChan, chip, config, p, clkon, refclk, trg1, trg2, n_stuck, readchn, casc;
 double f, r;
-unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
+unsigned short buf[1024*16]; // 32 kB
    
-   f       = fFrequency;
+   f       = fNominalFrequency;
    r       = fRange;
    clkon   = (GetCtrlReg() & BIT_TCAL_EN) > 0;
    refclk  = (GetCtrlReg() & BIT_REFCLK_SOURCE) > 0;
@@ -4794,14 +4931,14 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
    casc    = fChannelCascading;
 
    Init();
-   fFrequency = f;
+   fNominalFrequency = f;
    SetRefclk(refclk);
-   SetFrequency(fFrequency, true);
+   SetFrequency(fNominalFrequency, true);
    SetDominoMode(1);
    SetDominoActive(1);
    SetReadoutMode(1);
    SetInputRange(r);
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
       SelectClockSource(0);
    else if (fBoardType == 6)
       SetRefclk(refclk);
@@ -4822,9 +4959,14 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
    nChan = 0;
    timingChan = 0;
 
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
-      nChan = 9;
-      timingChan = 8;
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
+      if (fBoardType == 9) {
+         nChan = 8;
+         timingChan = -1;
+      } else {
+         nChan = 9;
+         timingChan = 8;
+      }
 
       /* measure offset */
       if (fBoardType == 5)
@@ -4833,13 +4975,13 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
          EnableAcal(1, 0); // disconnect analog inputs
       EnableTcal(0, 0);
       Sleep(100);
-      RobustAverageWaveforms(pcb, 1, nChan, 0, 33, wf1[0], 500, true);
+      RobustAverageWaveforms(pcb, 1, nChan, 0, 25, wf1[0], 200, true);
 
       /* measure gain at upper range */
       EnableAcal(1, fRange+0.4);
       EnableTcal(0, 1);
       Sleep(100);
-      RobustAverageWaveforms(pcb, 1, nChan, 33, 66, wf2[0], 500, true);
+      RobustAverageWaveforms(pcb, 1, nChan, 25, 50, wf2[0], 200, true);
 
    } else if (fBoardType == 6) {
       if (fTransport == TR_USB2) {
@@ -4909,7 +5051,7 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
       for (j=0 ; j<kNumberOfBins; j++) {
          if (i % 9 == timingChan) {
             /* calculate offset and gain for timing channel */
-            if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+            if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
                /* we have a +325mV and a -325mV value */
                fCellOffset[i][j] = (unsigned short) ((wf1[i][j]+wf2[i][j])/2+0.5);
                fCellGain[i][j]   = (wf2[i][j] - wf1[i][j])/65536.0*1000 / 650.0;
@@ -4932,7 +5074,7 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
 
          /* check gain */
          if (fCellGain[i][j] < 0.5 || fCellGain[i][j] > 1.1) {
-            if ((fBoardType == 7 || fBoardType == 8) && i % 2 == 1) {
+            if ((fBoardType == 7 || fBoardType == 8 || fBoardType == 9) && i % 2 == 1) {
                /* channels are not connected, so don't print error */
             } else {
                printf("Gain of %6.3lf for channel %2d, cell %4d out of range 0.5 ... 1.1\n",
@@ -4955,7 +5097,7 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
    */
 
    /* perform secondary calibration */
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8 || fBoardType == 9) {
       nChan = 9;
       timingChan = 8;
 
@@ -4966,7 +5108,7 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
          EnableAcal(1, 0); // disconnect analog inputs
       EnableTcal(0, 0);
       Sleep(100);
-      AverageWaveforms(pcb, 1, 9, 66, 100, wf1[0], 500, false);
+      AverageWaveforms(pcb, 1, 9, 50, 90, wf1[0], 500, false);
    } else if (fBoardType == 6 && fTransport == TR_VME) {
       nChan = 36;
       timingChan = 8;
@@ -4995,7 +5137,41 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
    fclose(fh);
    */
 
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
+   if (fBoardType == 9) {
+      /* write calibration CH0-CH7 to EEPROM page 1 */
+      for (i=0 ; i<8 ; i++)
+         for (j=0 ; j<1024; j++) {
+            buf[(i*1024+j)*2]   = fCellOffset[i][j];
+            buf[(i*1024+j)*2+1] = (unsigned short) ((fCellGain[i][j] - 0.7) / 0.4 * 65535);
+         }
+      WriteEEPROM(1, buf, 1024*32);
+      if (pcb != NULL)
+         pcb->Progress(93);
+
+      
+      /* write secondary calibration to EEPROM page 2 */
+      ReadEEPROM(2, buf, 1024*32);
+      for (i=0 ; i<8 ; i++)
+         for (j=0 ; j<1024; j++)
+            buf[(i*1024+j)*2] = fCellOffset2[i][j];
+      WriteEEPROM(2, buf, 1024*32);
+      if (pcb != NULL)
+         pcb->Progress(96);
+
+      /* update page # 0 */
+      ReadEEPROM(0, buf, 4096); // 0-0x0FFF
+      /* write calibration method */
+      buf[2]  = (buf[2] & 0xFF00) | VCALIB_METHOD;
+      /* write temperature and range */
+      buf[10] = ((unsigned short) (GetTemperature() * 2 + 0.5) << 8) | ((signed char)(fRange * 100));
+      buf[11] = 1; // EEPROM page #1+2
+      WriteEEPROM(0, buf, 4096);
+      fCellCalibratedRange = fRange;
+      if (pcb != NULL)
+         pcb->Progress(100);
+
+      
+   } else if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
       /* write calibration CH0-CH7 to EEPROM page 1 */
       for (i=0 ; i<8 ; i++)
          for (j=0 ; j<1024; j++) {
@@ -5018,7 +5194,7 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
 
       /* write calibration method and range */
       ReadEEPROM(0, buf, 2048); // 0-0x0FFF
-      buf[2] = VCALIB_METHOD | ((signed char)(fRange * 100)) << 8;
+      buf[2] = VCALIB_METHOD_V4 | ((signed char)(fRange * 100)) << 8;
       WriteEEPROM(0, buf, 2048);
       fCellCalibratedRange = fRange;
 
@@ -5093,11 +5269,95 @@ unsigned short buf[kNumberOfBins*kNumberOfCalibChannelsV4*2];
 
 /*------------------------------------------------------------------*/
 
-int DRSBoard::AnalyzeWF(int nIter, float wf[kNumberOfBins], int tCell, double cellT[kNumberOfBins])
+int DRSBoard::AnalyzeSlope(Averager *ave, int iIter, int nIter, int channel, float wf[kNumberOfBins], int tCell,
+                           double cellDV[kNumberOfBins], double cellDT[kNumberOfBins])
 {
-int    i, i1, i2, j, k, nzx, zeroXing[1000], edge, n_correct, nest;
-double damping, zeroLevel, ta, tb, dt, corr, inv_corr;
+   int i;
+   float dv, llim, ulim;
+   double sum, dtCell, dtWindow;
+   
+   if (fNominalFrequency > 3) {
+      llim = -100;
+      ulim =  100;
+   } else {
+      llim = -300;
+      ulim =  300;
+   }
 
+   // rising edges ----
+
+   // skip first cells after trigger cell
+   for (i=tCell+5 ; i<tCell+kNumberOfBins-5 ; i++) {
+      // test slope between previous and next cell to allow for negative cell width
+      if (wf[(i+kNumberOfBins-1) % kNumberOfBins] < wf[(i+2) % kNumberOfBins] &&
+          wf[i % kNumberOfBins] > llim &&
+          wf[(i+1) % kNumberOfBins] < ulim) {
+         
+         // calculate delta_v
+         dv = wf[(i+1) % kNumberOfBins] - wf[i % kNumberOfBins];
+    
+         // average delta_v
+         ave->Add(0, channel, i % kNumberOfBins, dv);
+      }
+   }
+
+   // falling edges ----
+   
+   // skip first cells after trigger cell
+   for (i=tCell+5 ; i<tCell+kNumberOfBins-5 ; i++) {
+      // test slope between previous and next cell to allow for negative cell width
+      if (wf[(i+kNumberOfBins-1) % kNumberOfBins] > wf[(i+2) % kNumberOfBins] &&
+          wf[i % kNumberOfBins] < ulim &&
+          wf[(i+1) % kNumberOfBins] > llim) {
+         
+         // calcualte delta_v
+         dv = wf[(i+1) % kNumberOfBins] - wf[i % kNumberOfBins];
+         
+         ave->Add(0, channel, i % kNumberOfBins, -dv);
+      }
+   }
+   
+   // calculate calibration every 100 events
+   if ((iIter + 1) % 100 == 0) {
+      // average over all 1024 dU
+      sum = 0;
+      for (i=0 ; i<kNumberOfBins ; i++) {
+         
+         if (fBoardType == 8)
+            cellDV[i] = ave->Median(0, channel, i);
+         else {
+            // use empirically found limits for averaging
+            if (fNominalFrequency >= 4)
+               cellDV[i] = ave->RobustAverage(3, 0, channel, i);
+            else if (fNominalFrequency >= 3)
+               cellDV[i] = ave->RobustAverage(6, 0, channel, i);
+            else
+               cellDV[i] = ave->Median(0, channel, i);
+         }
+         
+         sum += cellDV[i];
+      }
+      
+      sum /= kNumberOfBins;
+      dtCell = (float)1/fNominalFrequency;
+      dtWindow = dtCell * kNumberOfBins;
+      
+      // here comes the central calculation, dT = dV/average * dt_cell
+      for (i=0 ; i<kNumberOfBins ; i++)
+         cellDT[i] = cellDV[i] / sum * dtCell;
+   }
+   
+   return 1;
+}
+
+/*------------------------------------------------------------------*/
+
+int DRSBoard::AnalyzePeriod(Averager *ave, int iIter, int nIter, int channel, float wf[kNumberOfBins], int tCell,
+                            double cellDV[kNumberOfBins], double cellDT[kNumberOfBins])
+{
+int    i, i1, i2, j, nzx, zeroXing[1000], edge, n_correct, nest;
+double damping, zeroLevel, tPeriod, corr, dv, dv_limit, corr_limit;
+   
    /* calculate zero level */
    for (i=0,zeroLevel=0 ; i<1024 ; i++)
       zeroLevel += wf[i];
@@ -5108,132 +5368,104 @@ double damping, zeroLevel, ta, tb, dt, corr, inv_corr;
       wf[i] -= (float)zeroLevel;
 
    /* estimate damping factor */
-   damping = fFrequency / nIter * 2;
+   if (fBoardType == 9)
+      damping = 0.01;
+   else
+      damping = fNominalFrequency / nIter * 2   ;
 
    /* estimate number of zero crossings */
-   nest = (int) (1/fFrequency*1024 / (1/fTCALFrequency*1000));
+   nest = (int) (1/fNominalFrequency*1024 / (1/fTCALFrequency*1000));
+   
+   if (fNominalFrequency >= 4)
+      dv_limit = 4;
+   else if (fNominalFrequency >= 3)
+      dv_limit = 6;
+   else
+      dv_limit = 10000;
 
    for (edge = 0 ; edge < 2 ; edge ++) {
 
       /* find edge zero crossing with wrap-around */
-      for (i=tCell+3,nzx=0 ; i<tCell+1023 && nzx < (int)(sizeof(zeroXing)/sizeof(int)) ; i++) {
+      for (i=tCell+5,nzx=0 ; i<tCell+1023-5 && nzx < (int)(sizeof(zeroXing)/sizeof(int)) ; i++) {
+         dv = fabs(wf[(i+1) % 1024] - wf[i % 1024]);
+         
          if (edge == 0) {
-            if (wf[(i+1) % 1024] < 0 && wf[i % 1024] > 0) // falling edge
-               zeroXing[nzx++] = i;
+            if (wf[(i+1) % 1024] < 0 && wf[i % 1024] > 0) { // falling edge
+               if (fBoardType != 9 || fabs(dv-cellDV[i % 1024]) < dv_limit) // only if DV is not more the dv_limit away from average
+                  zeroXing[nzx++] = i % 1024;
+            }
          } else {
-            if (wf[(i+1) % 1024] > 0 && wf[i % 1024] < 0) // rising edge
-               zeroXing[nzx++] = i;
+            if (wf[(i+1) % 1024] > 0 && wf[i % 1024] < 0) { // rising edge
+               if (fBoardType != 9 || fabs(dv-cellDV[i % 1024]) < dv_limit)
+                  zeroXing[nzx++] = i % 1024;
+            }
          }
       }
 
       /* abort if uncorrect number of edges is found */
-      if (abs(nest - nzx) > nest / 10)
+      if (abs(nest - nzx) > nest / 3)
          return 0;
 
       for (i=n_correct=0 ; i<nzx-1 ; i++) {
-         i1 = zeroXing[i] % 1024;
-         if (i1 == 1023)
+         i1 = zeroXing[i];
+         i2 = zeroXing[i+1];
+         if (i1 == 1023 || i2 == 1023)
             continue;
-         ta = cellT[i1] + (cellT[i1+1] - cellT[i1])*(1/(1-wf[(i1+1) % 1024]/wf[i1]));
-         i2 = zeroXing[i+1] % 1024;
-         if (i2 == 1023)
+         
+         if (wf[(i1 + 1) % 1024] == 0 || wf[i2 % 1024] == 0)
             continue;
-         tb = cellT[i2] + (cellT[i2+1] - cellT[i2])*(1/(1-wf[(i2+1) % 1024]/wf[i2]));
+         
+         /* first partial cell */
+         tPeriod = cellDT[i1]*(1/(1-wf[i1]/wf[(i1 + 1) % 1024]));
 
-         /* wrap-around ? */
-         if (tb < ta)
-            tb += 1/fFrequency*1024;
+         /* full cells between i1 and i2 */
+         if (i2 < i1)
+            i2 += 1024;
+         
+         for (j=i1+1 ; j<i2 ; j++)
+            tPeriod += cellDT[j % 1024];
+         
+         /* second partial cell */
+         tPeriod += cellDT[i2 % 1024]*(1/(1-wf[(i2+1) % 1024]/wf[i2 % 1024]));
 
-         /* calculate correction to nominal period in ns */
-         corr = 1/fTCALFrequency*1000 - (tb - ta);
+         /* calculate correction to nominal period as a fraction */
+         corr = (1/fTCALFrequency*1000) / tPeriod;
 
-         /* skip very large corrections (noise?) */
-         if (fabs(corr/(1/fTCALFrequency*1000)) > 0.5)
+         /* skip very large corrections (noise) */
+         if (fBoardType == 9 && fNominalFrequency >= 2)
+            corr_limit = 0.001;
+         else if (fBoardType == 9)
+            corr_limit = 0.004;
+         else
+            corr_limit = 0.01;
+
+         if (fBoardType == 9 && fabs(1-corr) > corr_limit)
             continue;
 
          /* remeber number of valid corrections */
          n_correct++;
 
          /* apply damping factor */
-         corr *= damping;
+         corr = (corr-1)*damping + 1;
 
-         /* calculate inverse correction */
-         inv_corr = -corr;
-
-         /* apply from (i1+1)+1 to i2 inclusive */
-         i1 = zeroXing[i]+2;
-         i2 = zeroXing[i+1];
-
+         /* apply from i1 to i2-1 inclusive */
          if (i1 == i2)
             continue;
 
          /* distribute correciton equally into bins inside the region ... */
-         corr = corr / (i2-i1+1);
-
-         /* ... and inverse correction into the outside bins */
-         inv_corr = inv_corr / (1024 - (i2-i1+1));
-
-         i1 = i1 % 1024;
-         i2 = i2 % 1024;
-
-         double oldT[kNumberOfBins];
-         memcpy(oldT, cellT, sizeof(double)*1024);
-         for (j=0,ta=0 ; j<1024 ; j++) {
-            if (j < 1023)
-               dt = cellT[j+1] - cellT[j];
-            else
-               dt = 1/fFrequency*1024 - cellT[j];
-            if ((i2 > i1 && (j >= i1 && j<= i2)) ||
-                (i2 < i1 && (j >= i1 || j<= i2)) )
-               dt += corr;
-            else
-               dt += inv_corr;
-
-            cellT[j] = ta;
-            ta += dt;
-         }
-
-         /* check and correct for too narrow bin widths */
-         for (j=0 ; j<1023 ; j++) {
-            dt = cellT[j+1] - cellT[j];
-            if (dt < 1/fFrequency*0.1) {
-               /* if width is smaller than 10% of nominal width, "undo" 5x that correction,
-                  otherwise next iteration would cause this problem again */
-               corr = 5*(1/fFrequency*0.1-dt);
-               inv_corr = -corr;
-
-               /* distribute inverse correction equally into the outside bins */
-               inv_corr = inv_corr / 1022;
-
-               for (k=0,ta=0 ; k<1024 ; k++) {
-                  if (k < 1023)
-                     dt = cellT[k+1] - cellT[k];
-                  else
-                     dt = 1/fFrequency*1024 - cellT[k];
-                  if (k == j)
-                     dt += corr;
-                  else
-                     dt += inv_corr;
-
-                  cellT[k] = ta;
-                  ta += dt;
-               }
-            }
-         }
+         for (j=i1 ; j<=i2 ; j++)
+            cellDT[j % 1024] *= corr;
+            
+         /* test correction */
+         tPeriod = cellDT[i1]*(1/(1-wf[i1]/wf[(i1 + 1) % 1024]));
+         for (j=i1+1 ; j<i2 ; j++)
+            tPeriod += cellDT[j % 1024];
+         tPeriod += cellDT[i2]*(1/(1-wf[(i2+1) % 1024]/wf[i2]));
       }
 
       if (n_correct < nzx/3)
          return 0;
    }
-
-   /* smooth */
-   /*
-   double tmp[kNumberOfBins];
-   for (i=0 ; i<1024 ; i++)
-      tmp[i] = cellT[i];
-   for (i=1 ; i<1023 ; i++)
-      cellT[i] = (tmp[i-1] + tmp[i+1]) / 2;
-   */
 
    return 1;
 }
@@ -5243,44 +5475,68 @@ double damping, zeroLevel, ta, tb, dt, corr, inv_corr;
 
 int DRSBoard::CalibrateTiming(DRSCallback *pcb)
 {
-int    index, status, tCell, i, c, chip, mode, nIter, clkon, phase, refclk, trg1, trg2, n_error;
-double f, range, t1[4], t2[4];
-unsigned short buf[1024*4];
-float  wf[1024];
+   int    index, status, error, tCell, i, j, c, chip, mode, nIterPeriod, nIterSlope, clkon, phase, refclk, trg1, trg2, n_error, channel;
+   double f, range, tTrue, tRounded, dT, t1[8], t2[8], cellDV[kNumberOfChipsMax*kNumberOfChannelsMax][kNumberOfBins];
+   unsigned short buf[1024*16]; // 32 kB
+   float  wf[1024];
+   Averager *ave = NULL;
    
-   nIter   = 1000;
+   nIterPeriod = 5000;
+   nIterSlope  = 5000;
    n_error = 0;
-   f       = fFrequency;
+   refclk  = 0;
+   f       = fNominalFrequency;
    range   = fRange;
    clkon   = (GetCtrlReg() & BIT_TCAL_EN) > 0;
-   refclk  = (GetCtrlReg() & BIT_REFCLK_SOURCE) > 0;
+   if (fBoardType == 6)
+      refclk  = (GetCtrlReg() & BIT_REFCLK_SOURCE) > 0;
    trg1    = fTriggerEnable1;
    trg2    = fTriggerEnable2;
 
    Init();
-   fFrequency = f;
+   fNominalFrequency = f;
    fTimingCalibratedFrequency = 0;
-   SetRefclk(refclk);
-   SetFrequency(fFrequency, true);
+   if (fBoardType == 6) // don't set refclk for evaluation boards
+      SetRefclk(refclk);
+   SetFrequency(fNominalFrequency, true);
    if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
       fTCALFrequency = 132; // 132 MHz for EVAL1, for MEZZ this is set by ConfigureLMK
+   else if (fBoardType == 9)
+      fTCALFrequency = 100;
    SetDominoMode(1);
    SetDominoActive(1);
    SetReadoutMode(1);
    EnableTrigger(0, 0);
-   EnableTcal(1, 0, 0);
-   if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8)
+   if (fBoardType == 5 || fBoardType == 7) {
+      EnableTcal(1, 0, 0);
       SelectClockSource(1); // 2nd quartz
+   } else if (fBoardType == 8) {
+      nIterSlope  = 0;
+      nIterPeriod = 1500;
+      EnableTcal(1, 0, 0);
+      SelectClockSource(1); // 2nd quartz
+      ave = new Averager(1, 1, 1024, 500); // one chip, 1 channel @ 1024 bins
+   } else if (fBoardType == 9) {
+      EnableTcal(1);
+      nIterSlope  = 500;
+      nIterPeriod = 500;
+      ave = new Averager(1, 9, 1024, 500); // one chip, 9 channels @ 1024 bins
+   }
    StartDomino();
 
    /* initialize time array */
    for (i=0 ; i<1024 ; i++)
       for (chip=0 ; chip<4 ; chip++)
-         fCellT[chip][i] = (float)1/fFrequency*i; // [ns]
+         for (channel = 0 ; channel < 8 ; channel++) {
+            fCellDT[chip][channel][i] = (float)1/fNominalFrequency;  // [ns]
+         }
 
-   for (index = 0 ; index < nIter ; index++) {
+   error = 0;
+   
+   for (index = 0 ; index < nIterSlope+nIterPeriod ; index++) {
       if (index % 10 == 0)
-         pcb->Progress(100*index/nIter);
+         if (pcb)
+            pcb->Progress(100*index/(nIterSlope+nIterPeriod));
 
       if (fTransport == TR_VME) {
          SoftTrigger();
@@ -5298,13 +5554,15 @@ float  wf[1024];
          for (chip=0 ; chip<4 ; chip++) {
             tCell = GetStopCell(chip);
             GetWave(chip, 8, wf, true, tCell, 0, true);
-            status = AnalyzeWF(nIter, wf, tCell, fCellT[chip]);
+            status = AnalyzePeriod(ave, index, nIterPeriod, 0, wf, tCell, cellDV[chip], fCellDT[chip][0]);
 
             if (!status)
                n_error++;
 
-            if (n_error > nIter / 10)
-               return 0;
+            if (n_error > nIterPeriod / 10) {
+               error = 1;
+               break;
+            }
          }
       } else {
          if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) { // DRS4 Evaluation board: 1 Chip
@@ -5316,13 +5574,46 @@ float  wf[1024];
 
             tCell = GetStopCell(0);
             GetWave(0, 8, wf, true, tCell, 0, true);
-            status = AnalyzeWF(nIter, wf, tCell, fCellT[0]);
+            
+            if (index < nIterSlope)
+               status = AnalyzeSlope(ave, index, nIterSlope, 0, wf, tCell, cellDV[0], fCellDT[0][0]);
+            else
+               status = AnalyzePeriod(ave, index, nIterPeriod, 0, wf, tCell, cellDV[0], fCellDT[0][0]);
 
             if (!status)
                n_error++;
 
-            if (n_error > nIter / 10)
-               return 0;
+            if (n_error > nIterPeriod / 10) {
+               error = 1;
+               break;
+            }
+         } else if (fBoardType == 9) { // DRS4 Evaluation board V5: all channels from one chip
+            SoftTrigger();
+            while (IsBusy());
+            
+            StartDomino();
+            TransferWaves();
+            
+            // calibrate all channels individually
+            for (channel = 0 ; channel < 8 ; channel+=2) {
+               tCell = GetStopCell(0);
+               GetWave(0, channel, wf, true, tCell, 0, true);
+               
+               if (index < nIterSlope)
+                  status = AnalyzeSlope(ave, index, nIterSlope, channel, wf, tCell, cellDV[channel], fCellDT[0][channel]);
+               else
+                  status = AnalyzePeriod(ave, index, nIterPeriod, channel, wf, tCell, cellDV[channel], fCellDT[0][channel]);
+               
+               if (!status)
+                  n_error++;
+               
+               if (n_error > nIterPeriod / 2) {
+                  error = 1;
+                  break;
+               }
+            }
+            if (!status)
+               break;
 
          } else {               // DRS4 Mezzanine board: 4 Chips
             for (mode=0 ; mode<2 ; mode++) {
@@ -5342,17 +5633,29 @@ float  wf[1024];
                for (chip=0 ; chip<4 ; chip+=2) {
                   tCell = GetStopCell(chip+mode);
                   GetWave(chip+mode, 8, wf, true, tCell, 0, true);
-                  status = AnalyzeWF(nIter, wf, tCell, fCellT[chip+mode]);
+                  status = AnalyzePeriod(ave, index, nIterPeriod, 0, wf, tCell, cellDV[chip+mode], fCellDT[chip+mode][0]);
 
-                  if (!status)
-                     return 0;
+                  if (!status) {
+                     error = 1;
+                     break;
+                  }
                }
+               if (!status)
+                  break;
+
             }
          }
       }
    }
 
-   pcb->Progress(100);
+   if (pcb)
+      pcb->Progress(100);
+   
+   // DRS4 Evaluation board V5: copy even channels to odd channels (usually not connected)
+   if (fBoardType == 9) {
+      for (channel = 0 ; channel < 8 ; channel+=2)
+         memcpy(fCellDT[0][channel+1], fCellDT[0][channel], sizeof(unsigned short)*1024);
+   }
 
    // use following lines to save calibration into an ASCII file
 #if 0
@@ -5362,40 +5665,68 @@ float  wf[1024];
    if (!fh)
       printf("Cannot open file \"cellt.csv\"\n");
    else {
-      fprintf(fh, "index;d_ch1;d_ch2;d_ch3;d_ch4\n");
+      fprintf(fh, "index,dt_ch1,dt_ch2,dt_ch3,dt_ch4\n");
       for (i=0 ; i<1024 ; i++)
-         fprintf(fh, "%4d;%5.3lf;%5.3lf;%5.3lf;%5.3lf\n", i, 
-                 fCellT[0][i]-i/fFrequency, 
-                 fCellT[1][i]-i/fFrequency, 
-                 fCellT[2][i]-i/fFrequency, 
-                 fCellT[3][i]-i/fFrequency);
+         fprintf(fh, "%4d,%5.3lf,%5.3lf,%5.3lf,%5.3lf\n", i, fCellDT[0][0][i], fCellDT[0][2][i], fCellDT[0][4][i], fCellDT[0][6][i]);
       fclose(fh);
    }
 #endif
-
+   
    if (fBoardType == 5 || fBoardType == 7 || fBoardType == 8) {
       /* write timing calibration to EEPROM page 0 */
       ReadEEPROM(0, buf, sizeof(buf));
-      for (i=0,t1[0]=0 ; i<1024; i++) {
-         t2[0] = fCellT[0][i] - t1[0];
-         t2[0] = (unsigned short) (t2[0] * 10000 + 0.5);
-         t1[0] += t2[0] / 10000.0;
-         buf[i*2+1] = (unsigned short) t2[0];
-      }
+      for (i=0,t1[0]=0 ; i<1024; i++)
+         buf[i*2+1] = (unsigned short) (fCellDT[0][0][i] * 10000 + 0.5);
 
       /* write calibration method and frequency */
-      buf[4] = TCALIB_METHOD;
-      buf[6] = (unsigned short) (fFrequency * 1000 + 0.5);
-      fTimingCalibratedFrequency = buf[6] / 1000.0;
+      buf[4] = TCALIB_METHOD_V4;
+      buf[6] = (unsigned short)(fNominalFrequency*1000+0.5);
+      
+      fTimingCalibratedFrequency = fNominalFrequency;
       WriteEEPROM(0, buf, sizeof(buf));
+      
+      // copy calibration to all channels
+      for (i=1 ; i<8 ; i++)
+         for (j=0 ; j<1024; j++)
+            fCellDT[0][i][j] = fCellDT[0][0][j];
+
+   } else if (fBoardType == 9) {
+  
+      /* write timing calibration to EEPROM page 2 */
+      ReadEEPROM(2, buf, sizeof(buf));
+      for (i=0 ; i<8 ; i++) {
+         tTrue = 0;    // true cellT
+         tRounded = 0; // rounded cellT
+         for (j=0 ; j<1024; j++) {
+            tTrue += fCellDT[0][i][j];
+            dT = tTrue - tRounded;
+            // shift by 1 ns to allow negative widths
+            dT = (unsigned short) (dT*10000+1000+0.5);
+            tRounded += (dT - 1000) / 10000.0;
+            buf[(i*1024+j)*2+1] = (unsigned short) dT;
+         }
+      }
+      WriteEEPROM(2, buf, sizeof(buf));
+      
+      /* write calibration method and frequency to EEPROM page 0 */
+      ReadEEPROM(0, buf, sizeof(buf));
+      buf[4] = 1; // number of calibrations
+      buf[2] = (TCALIB_METHOD << 8) | (buf[2] & 0xFF); // calibration method
+      float fl = (float) fNominalFrequency;
+      memcpy(&buf[8], &fl, sizeof(float)); // exact freqeuncy
+      
+      fTimingCalibratedFrequency = fNominalFrequency;
+      WriteEEPROM(0, buf, sizeof(buf));
+   
    } else {
+   
       /* write timing calibration to EEPROM page 6 */
       ReadEEPROM(6, buf, sizeof(buf));
       for (c=0 ; c<4 ; c++)
          t1[c] = 0;
       for (i=0 ; i<1024; i++) {
          for (c=0 ; c<4 ; c++) {
-            t2[c] = fCellT[c][i] - t1[c];
+            t2[c] = fCellDT[0][c][i] - t1[c];
             t2[c] = (unsigned short) (t2[c] * 10000 + 0.5);
             t1[c] += t2[c] / 10000.0;
          }
@@ -5409,16 +5740,22 @@ float  wf[1024];
       /* write calibration method and frequency */
       ReadEEPROM(0, buf, 16);
       buf[4] = TCALIB_METHOD;
-      buf[6] = (unsigned short) (fFrequency * 1000 + 0.5);
+      buf[6] = (unsigned short) (fNominalFrequency * 1000 + 0.5);
       fTimingCalibratedFrequency = buf[6] / 1000.0;
       WriteEEPROM(0, buf, 16);
    }
+
+   if (ave)
+      delete ave;
 
    /* remove calibration voltage */
    EnableAcal(0, 0);
    EnableTcal(clkon, 0);
    SetInputRange(range);
    EnableTrigger(trg1, trg2);
+
+   if (error)
+      return 0;
 
    return 1;
 }
@@ -5694,7 +6031,7 @@ bool ResponseCalibration::WriteCalibrationV3(unsigned int chipIndex)
       return false;
    }
    sprintf(str, "%s/board%d/ResponseCalib_board%d_chip%d_%dMHz.bin", strt, fBoard->GetBoardSerialNumber(),
-           fBoard->GetBoardSerialNumber(), chipIndex, static_cast < int >(fBoard->GetFrequency() * 1000));
+           fBoard->GetBoardSerialNumber(), chipIndex, static_cast < int >(fBoard->GetNominalFrequency() * 1000));
    fCalibFile = fopen(str, "wb");
    if (fCalibFile == NULL) {
       printf("Error: Cannot write to file \"%s\"\n", str);
@@ -5753,7 +6090,7 @@ bool ResponseCalibration::WriteCalibrationV4(unsigned int chipIndex)
       return false;
    }
    sprintf(str, "%s/board%d/ResponseCalib_board%d_chip%d_%dMHz.bin", strt, fBoard->GetBoardSerialNumber(),
-           fBoard->GetBoardSerialNumber(), chipIndex, static_cast < int >(fBoard->GetFrequency() * 1000));
+           fBoard->GetBoardSerialNumber(), chipIndex, static_cast < int >(fBoard->GetNominalFrequency() * 1000));
    fCalibFile = fopen(str, "wb");
    if (fCalibFile == NULL) {
       printf("Error: Cannot write to file \"%s\"\n", str);
@@ -5973,24 +6310,6 @@ bool ResponseCalibration::RecordCalibrationPointsV4(int chipNumber)
          fResponseX[i][k][fCurrentPoint] = static_cast < float >(average);
       }
    }
-
-#ifdef DEBUG_CALIB
-   for (j = 0; j < fNumberOfSamples; j++)
-      printf("%d ", fWaveFormMode3[1][j][10]);
-
-   s = s2 = 0;
-   for (j = 0; j < fNumberOfSamples; j++) {
-      s += fWaveFormMode3[i][j][k];
-      s2 += fWaveFormMode3[i][j][k] * fWaveFormMode3[i][j][k];
-   }
-   n = fNumberOfSamples;
-   average = s / n;
-   sigma = sqrt((n * s2 - s * s) / (n * (n - 1)));
-
-   printf("\n");
-   printf("%1.2lf V: %6.1lf (%1.4lf)\n", voltage,
-          fResponseX[1][10][fCurrentPoint], fResponseX[1][10][fCurrentPoint] / 4096.0);
-#endif
 
    fCurrentPoint++;
    if (fCurrentPoint == fNumberOfPoints) {
@@ -6722,7 +7041,7 @@ bool ResponseCalibration::ReadCalibrationV3(unsigned int chipIndex)
    fBoard->GetCalibrationDirectory(calibDir);
    sprintf(fileName, "%s/board%d/ResponseCalib_board%d_chip%d_%dMHz.bin", calibDir,
            fBoard->GetBoardSerialNumber(), fBoard->GetBoardSerialNumber(), chipIndex,
-           static_cast < int >(fBoard->GetFrequency() * 1000));
+           static_cast < int >(fBoard->GetNominalFrequency() * 1000));
 
    fileHandle = fopen(fileName, "rb");
    if (fileHandle == NULL) {
@@ -6880,7 +7199,7 @@ bool ResponseCalibration::ReadCalibrationV4(unsigned int chipIndex)
    fBoard->GetCalibrationDirectory(calibDir);
    sprintf(fileName, "%s/board%d/ResponseCalib_board%d_chip%d_%dMHz.bin", calibDir,
            fBoard->GetBoardSerialNumber(), fBoard->GetBoardSerialNumber(), chipIndex,
-           static_cast < int >(fBoard->GetFrequency() * 1000));
+           static_cast < int >(fBoard->GetNominalFrequency() * 1000));
 
    fileHandle = fopen(fileName, "rb");
    if (fileHandle == NULL) {

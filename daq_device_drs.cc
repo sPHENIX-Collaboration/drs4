@@ -132,10 +132,38 @@ int  daq_device_drs::init()
 
   b->SetTranspMode(1);
   b->SetInputRange(0);
-  b->EnableTrigger(1,1);              // lemo off, analog trigger on
-  b->SetTriggerSource(_trigger);
-  b->SetTriggerLevel(_tthreshold, _slope);
-  b->SetTriggerDelayNs(_delay);
+  if ( b->GetBoardType() >= 8)
+    {
+      b->EnableTrigger(1,0);              // lemo off, analog trigger on
+      b->SetTriggerSource(_trigger);
+      b->SetTriggerLevel(_tthreshold);
+      b->SetTriggerPolarity(_slope);
+      b->SetTriggerDelayNs(_delay);
+    }
+
+  else if ( b->GetBoardType() == 7)
+    {
+      if ( _trigger & 0x10) // external trigger
+	{
+	  b->EnableTrigger(1,0);   //external trigger
+	}
+      else
+	{
+	  int real_trigger =0;
+	  if ( _trigger & 0x1) real_trigger = 0;
+	  else if ( _trigger & 0x2) real_trigger = 1;
+	  else if ( _trigger & 0x4) real_trigger = 2;
+	  else if ( _trigger & 0x8) real_trigger = 3;
+
+	  b->EnableTrigger(0,1);              // lemo off, analog trigger on
+	  b->SetTriggerSource( real_trigger);
+	  b->SetTriggerLevel(_tthreshold);
+	  b->SetTriggerPolarity(_slope);
+	  b->SetTriggerDelayNs(_delay);
+	}
+    }
+  b->SetRefclk(0);
+
  
   // and we trigger rearm with our event type so it takes effect
   rearm (m_eventType);
@@ -192,7 +220,7 @@ int daq_device_drs::put_data(const int etype, int * adr, const int length )
 
   //  float *x = d;
 
-  b->GetTime(0, b->GetTriggerCell(0), d);  // the first 1024 samples are the time bins
+  b->GetTime(0, b->GetNominalFrequency(), b->GetTriggerCell(0), d);  // the first 1024 samples are the time bins
 
   if ( _start)
     {
@@ -215,16 +243,16 @@ int daq_device_drs::put_data(const int etype, int * adr, const int length )
     }
 
 
-//   for ( int j = 0; j < 1024; j++)
-//     {
-//       cout << j 
-// 	   << "  " << x[j] 
-// 	   << "  " << x[j + 1024] 
-// 	   << "  " << x[j + 2*1024] 
-// 	   << "  " << x[j + 3*1024] 
-// 	   << "  " << x[j + 4*1024] 
-// 	   << endl;
-//     }
+  // for ( int j = 0; j < 1024; j++)
+  //   {
+  //     cout << j 
+  // 	   << "  " << x[j] 
+  // 	   << "  " << x[j + 1024] 
+  // 	   << "  " << x[j + 2*1024] 
+  // 	   << "  " << x[j + 3*1024] 
+  // 	   << "  " << x[j + 4*1024] 
+  // 	   << endl;
+  //   }
 
 
 
@@ -250,7 +278,7 @@ void daq_device_drs::identify(std::ostream& os) const
       os  << "DRS4 Eval Board  Event Type: " << m_eventType 
 	  << " Subevent id: " << m_subeventid 
 	  << " S/N "     << b->GetBoardSerialNumber() 
-	//	  << " Firmware rev " << b->GetFirmwareVersion()
+	  << " Type  " << b->GetBoardType()
 	  << " Trg " << _trigger
 	  << " Thresh " << _tthreshold*1000 <<"mV";
       if (_slope) os << " neg " ;

@@ -6,16 +6,11 @@
   Contents:     Simple example application to read out a DRS4
                 evaluation board
 
-  $Id: drs_exam.cpp 20380 2012-11-13 13:38:01Z ritt $
+  $Id: drs_exam.cpp 21258 2014-02-06 16:20:05Z ritt $
 
 \********************************************************************/
 
 #include <math.h>
-#include <iostream>
-#include <iomanip>
-
-using namespace std;
-
 
 #ifdef _MSC_VER
 
@@ -48,8 +43,8 @@ int main()
    int i, j, nBoards;
    DRS *drs;
    DRSBoard *b;
-   float time_array[1024];
-   float wave_array[9][1024];
+   float time_array[8][1024];
+   float wave_array[8][1024];
    FILE  *f;
 
    /* do initial scan */
@@ -84,15 +79,30 @@ int main()
    /* set input range to -0.5V ... +0.5V */
    b->SetInputRange(0);
 
-
    /* use following line to set range to 0..1V */
    //b->SetInputRange(0.5);
+   
+   /* use following line to turn on the internal 100 MHz clock connected to all channels  */
+   b->EnableTcal(1);
 
    /* use following lines to enable hardware trigger on CH1 at 50 mV positive edge */
-   b->EnableTrigger(1, 0);           // enable hardware trigger
-   b->SetTriggerSource(0xf);        // set CH1 as source
-      
-   b->SetTriggerLevel(0.08, false);     // 0.05 V, positive edge
+   if (b->GetBoardType() >= 8) {        // Evaluaiton Board V4&5
+      b->EnableTrigger(1, 0);           // enable hardware trigger
+      b->SetTriggerSource(1<<0);        // set CH1 as source
+   } else if (b->GetBoardType() == 7) { // Evaluation Board V3
+      b->EnableTrigger(0, 1);           // lemo off, analog trigger on
+      b->SetTriggerSource(0);           // use CH1 as source
+   }
+   b->SetTriggerLevel(0.05);            // 0.05 V
+   b->SetTriggerPolarity(false);        // positive edge
+   
+   /* use following lines to set individual trigger elvels */
+   //b->SetIndividualTriggerLevel(1, 0.1);
+   //b->SetIndividualTriggerLevel(2, 0.2);
+   //b->SetIndividualTriggerLevel(3, 0.3);
+   //b->SetIndividualTriggerLevel(4, 0.4);
+   //b->SetTriggerSource(15);
+   
    b->SetTriggerDelayNs(0);             // zero ns trigger delay
    
    /* use following lines to enable the external trigger */
@@ -104,66 +114,55 @@ int main()
    // }
 
    /* open file to save waveforms */
-   //   f = fopen("data.txt", "w");
-   //if (f == NULL) {
-   //   perror("ERROR: Cannot open file \"data.txt\"");
-   //   return 1;
-   //}
-
-   /* use following line to switch the internal 60 MHz clock to channel #4 */
-   //  b->EnableTcal(1);
-
-   //sleep(2);
-
+   f = fopen("data.txt", "w");
+   if (f == NULL) {
+      perror("ERROR: Cannot open file \"data.txt\"");
+      return 1;
+   }
    
    /* repeat ten times */
-   for (j=0 ; j<1 ; j++) {
+   for (j=0 ; j<10 ; j++) {
 
       /* start board (activate domino wave) */
       b->StartDomino();
 
-      // usleep (100000);
-      
-      // b->SoftTrigger();
-      
       /* wait for trigger */
+      printf("Waiting for trigger...");
+      
+      /* use following line to do a software trigger */
+      b->SoftTrigger();
+      
+      fflush(stdout);
       while (b->IsBusy());
 
       /* read all waveforms */
       b->TransferWaves(0, 8);
 
-      /* read time (X) array in ns */
-      b->GetTime(0, b->GetTriggerCell(0), time_array);
+      /* read time (X) array of first channel in ns */
+      b->GetTime(0, 0, b->GetTriggerCell(0), time_array[0]);
 
-      /* decode waveform (Y) array first channel in mV */
+      /* decode waveform (Y) array of first channel in mV */
+      b->GetWave(0, 0, wave_array[0]);
 
-      int c;
-      for ( c = 0; c < 9; c++)
-	{
-	  b->GetWave(0, c, wave_array[c]);
-	}
+      /* read time (X) array of second channel in ns
+       Note: On the evaluation board input #1 is connected to channel 0 and 1 of
+       the DRS chip, input #2 is connected to channel 2 and 3 and so on. So to
+       get the input #2 we have to read DRS channel #2, not #1. */
+      b->GetTime(0, 2, b->GetTriggerCell(0), time_array[1]);
 
-      for ( c = 0; c < 1024; c++)
-	{
-	  std::cout << setw(10) << time_array[c] 
-		    << setw(9) << wave_array[0][c]
-		    << setw(9) << wave_array[1][c]
-		    << setw(9) << wave_array[2][c]
-		    << setw(9) << wave_array[3][c]
-		    << setw(9) << wave_array[4][c]
-		    << setw(9) << wave_array[5][c]
-		    << setw(9) << wave_array[6][c]
-		    << setw(9) << wave_array[7][c]
-		    << setw(9) << wave_array[8][c]
-		    << endl;
-	}
+      /* decode waveform (Y) array of second channel in mV */
+      b->GetWave(0, 2, wave_array[1]);
+
+      /* Save waveform: X=time_array[i], Yn=wave_array[n][i] */
+      fprintf(f, "Event #%d ----------------------\n  t1[ns]  u1[mV]  t2[ns] u2[mV]\n", j);
+      for (i=0 ; i<1024 ; i++)
+         fprintf(f, "%7.3f %7.1f %7.3f %7.1f\n", time_array[0][i], wave_array[0][i], time_array[1][i], wave_array[1][i]);
 
       /* print some progress indication */
-      if (j % 100 == 0)
-         printf("\rEvent #%d read successfully\n", j);
+      printf("\rEvent #%d read successfully\n", j);
    }
 
-   //   fclose(f);
+   fclose(f);
    
    /* delete DRS object -> close USB connection */
    delete drs;

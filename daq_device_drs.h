@@ -51,7 +51,7 @@ private:
 
   int _trigger;
   int _trigger_handler;
-  float _tthreshold;
+  double _tthreshold;
   int _slope;
   int _delay;
   int _speed;

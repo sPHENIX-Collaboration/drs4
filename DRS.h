@@ -1,13 +1,14 @@
 /********************************************************************
   DRS.h, S.Ritt, M. Schneebeli - PSI
 
-  $Id: DRS.h 18410 2011-09-14 11:50:52Z ritt $
+  $Id: DRS.h 21259 2014-02-06 16:21:24Z ritt $
 
 ********************************************************************/
 #ifndef DRS_H
 #define DRS_H
 #include <stdio.h>
 #include <string.h>
+#include "averager.h"
 
 #ifdef HAVE_LIBUSB
 #   ifndef HAVE_USB
@@ -108,6 +109,12 @@ unsigned int millitime();
 #define REG_TRIGGER_BUS              0x00022
 #define REG_SERIAL_BOARD             0x00024
 #define REG_VERSION_FW               0x00026
+#define REG_SCALER0                  0x00028
+#define REG_SCALER1                  0x0002C
+#define REG_SCALER2                  0x00030
+#define REG_SCALER3                  0x00034
+#define REG_SCALER4                  0x00038
+#define REG_SCALER5                  0x0003C
 
 /*---- Control register bit definitions ----------------------------*/
 
@@ -359,8 +366,6 @@ public:
    bool   ReadCalibration(unsigned int chipIndex);
    bool   ReadCalibrationV3(unsigned int chipIndex);
    bool   ReadCalibrationV4(unsigned int chipIndex);
-   bool   Calibrate(unsigned int chipIndex, unsigned int channel, float *adcWaveform,
-                    float *uWaveform, float threshold, bool offsetCalib);
    bool   Calibrate(unsigned int chipIndex, unsigned int channel, unsigned short *adcWaveform, short *uWaveform,
                     int triggerCell, float threshold, bool offsetCalib);
    bool   SubtractADCOffset(unsigned int chipIndex, unsigned int channel, unsigned short *adcWaveform,
@@ -455,7 +460,7 @@ public:
    // DAC channels (DRS4 MEZZ1 (fBoardType 6) : DAC_ONOFS,DAC_CMOFSP,DAC_CALN,DAC_CALP,DAC_BIAS,DAC_CMOFSN,DAC_ROFS_1)
    unsigned int         fDAC_CMOFSP;
    unsigned int         fDAC_CMOFSN;
-   // DAC channels (DRS4 MEZZ4 (fBoardType 8) : DAC_ONOFS,DAC_TLEVEL4,DAC_CALN,DAC_CALP,DAC_BIAS,DAC_TLEVEL1,DAC_TLEVEL2,DAC_TLEVEL3)
+   // DAC channels (DRS4 EVAL4 (fBoardType 8) : DAC_ONOFS,DAC_TLEVEL4,DAC_CALN,DAC_CALP,DAC_BIAS,DAC_TLEVEL1,DAC_TLEVEL2,DAC_TLEVEL3)
    unsigned int         fDAC_TLEVEL1;
    unsigned int         fDAC_TLEVEL2;
    unsigned int         fDAC_TLEVEL3;
@@ -486,7 +491,8 @@ protected:
    mvme_addr_t          fBaseAddress;
 #endif
    int                  fSlotNumber;
-   double               fFrequency;
+   double               fNominalFrequency;
+   double               fTrueFrequency;
    double               fTCALFrequency;
    double               fRefClock;
    int                  fMultiBuffer;
@@ -539,13 +545,13 @@ protected:
    // Fields for Calibration new method
    bool                 fVoltageCalibrationValid;
    double               fCellCalibratedRange;
+   double               fCellCalibratedTemperature;
    unsigned short       fCellOffset[kNumberOfChipsMax * kNumberOfChannelsMax][kNumberOfBins];
    unsigned short       fCellOffset2[kNumberOfChipsMax * kNumberOfChannelsMax][kNumberOfBins];
    double               fCellGain[kNumberOfChipsMax * kNumberOfChannelsMax][kNumberOfBins];
 
    double               fTimingCalibratedFrequency;
-   double               fCellT[kNumberOfChipsMax][kNumberOfBins];
-   signed short         fCellDT[kNumberOfChipsMax * kNumberOfChannelsMax][kNumberOfBins];
+   double               fCellDT[kNumberOfChipsMax][kNumberOfChannelsMax][kNumberOfBins];
 
    // Fields for Time Calibration
    TimeData           **fTimeData;
@@ -633,7 +639,9 @@ public:
    int          GetTriggerDelay() { return fTriggerDelay; }
    double       GetTriggerDelayNs() { return fTriggerDelayNs; }
    int          SetSyncDelay(int ticks);
-   int          SetTriggerLevel(double value, bool negative);
+   int          SetTriggerLevel(double value);
+   int          SetIndividualTriggerLevel(int channel, double voltage);
+   int          SetTriggerPolarity(bool negative);
    int          SetTriggerSource(int source);
    int          GetTriggerSource() { return fTriggerSource; }
    int          SetDelayedStart(int flag);
@@ -658,14 +666,14 @@ public:
    int          Debug() { return fDebug; }
    int          SetDominoMode(unsigned char mode);
    int          SetDominoActive(unsigned char mode);
-   int          SetADCActive(unsigned char mode);
    int          SetReadoutMode(unsigned char mode);
    int          SoftTrigger(void);
    int          ReadFrequency(unsigned char chipIndex, double *f);
    int          SetFrequency(double freq, bool wait);
    double       VoltToFreq(double volt);
    double       FreqToVolt(double freq);
-   double       GetFrequency() const { return fFrequency; }
+   double       GetNominalFrequency() const { return fNominalFrequency; }
+   double       GetTrueFrequency();
    int          RegulateFrequency(double freq);
    int          SetExternalClockFrequency(double frequencyMHz);
    double       GetExternalClockFrequency();
@@ -680,6 +688,7 @@ public:
    int          SetInputRange(double center);
    double       GetInputRange(void) { return fRange; }
    double       GetCalibratedInputRange(void) { return fCellCalibratedRange; }
+   double       GetCalibratedTemperature(void) { return fCellCalibratedTemperature; }
    double       GetCalibratedFrequency(void) { return fTimingCalibratedFrequency; }
    int          TransferWaves(int numberOfChannels = kNumberOfChipsMax * kNumberOfChannelsMax);
    int          TransferWaves(unsigned char *p, int numberOfChannels = kNumberOfChipsMax * kNumberOfChannelsMax);
@@ -704,9 +713,9 @@ public:
                            unsigned short *waveform, bool adjustToClock = false);
    bool         IsTimingCalibrationValid(void);
    bool         IsVoltageCalibrationValid(void) { return fVoltageCalibrationValid; }
-   int          GetTime(unsigned int chipIndex, double freq, int tc, float *time, bool tcalibrated=true, bool rotated=true);
-   int          GetTime(unsigned int chipIndex, int tc, float *time, bool tcalibrated=true, bool rotated=true);
-   int          GetTimeCalibration(unsigned int chipIndex, int mode, float *time, bool force=false);
+   int          GetTime(unsigned int chipIndex, int channelIndex, double freq, int tc, float *time, bool tcalibrated=true, bool rotated=true);
+   int          GetTime(unsigned int chipIndex, int channelIndex, int tc, float *time, bool tcalibrated=true, bool rotated=true);
+   int          GetTimeCalibration(unsigned int chipIndex, int channelIndex, int mode, float *time, bool force=false);
    int          GetTriggerCell(unsigned int chipIndex);
    int          GetStopCell(unsigned int chipIndex);
    unsigned char GetStopWSR(unsigned int chipIndex);
@@ -731,6 +740,7 @@ public:
    int          SetCalibTiming(int t1, int t2);
    double       GetTemperature();
    int          GetTriggerBus();
+   unsigned int GetScaler(int channel);
    int          ReadEEPROM(unsigned short page, void *buffer, int size);
    int          WriteEEPROM(unsigned short page, void *buffer, int size);
    bool         HasCorrectFirmware();
@@ -754,7 +764,8 @@ public:
    int          AverageWaveforms(DRSCallback *pcb, int chipIndex, int nChan, int prog1, int prog2, unsigned short *awf, int n, bool rotated);
    int          RobustAverageWaveforms(DRSCallback *pcb, int chipIndex, int nChan, int prog1, int prog2, unsigned short *awf, int n, bool rotated);
    int          CalibrateVolt(DRSCallback *pcb);
-   int          AnalyzeWF(int nIter, float wf[kNumberOfBins], int tCell, double cellT[kNumberOfBins]);
+   int          AnalyzePeriod(Averager *ave, int iIter, int nIter, int channel, float wf[kNumberOfBins], int tCell, double cellDV[kNumberOfBins], double cellDT[kNumberOfBins]);
+   int          AnalyzeSlope(Averager *ave, int iIter, int nIter, int channel, float wf[kNumberOfBins], int tCell, double cellDV[kNumberOfBins], double cellDT[kNumberOfBins]);
    int          CalibrateTiming(DRSCallback *pcb);
    static void  RemoveSymmetricSpikes(short **wf, int nwf,
                                       short diffThreshold, int spikeWidth,
@@ -788,7 +799,7 @@ int DRSBoard::GetWaveformBufferSize() const
          } else {
             nbin = fNumberOfChips * 5 * kNumberOfBins;
          }
-      } else if (fBoardType == 7 || fBoardType == 8)
+      } else if (fBoardType == 7 || fBoardType == 8 || fBoardType == 9)
          nbin = fNumberOfChips * fNumberOfChannels * kNumberOfBins;
    }
    return nbin * static_cast<int>(sizeof(short int));
@@ -923,9 +934,12 @@ public:
    ~DRS();
 
    DRSBoard        *GetBoard(int i) { return fBoard[i]; }
+   void             SetBoard(int i, DRSBoard *b);
    DRSBoard       **GetBoards() { return fBoard; }
    int              GetNumberOfBoards() const { return fNumberOfBoards; }
    bool             GetError(char *str, int size);
+   void             SortBoards();
+
 #ifdef HAVE_VME
    MVME_INTERFACE *GetVMEInterface() const { return fVmeInterface; };
 #endif
