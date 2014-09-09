@@ -5,7 +5,7 @@
 
   Contents:     Library functions for DRS mezzanine and USB boards
 
-  $Id: DRS.cpp 21273 2014-02-20 13:01:57Z ritt $
+  $Id: DRS.cpp 21309 2014-04-11 14:51:29Z ritt $
 
 \********************************************************************/
 
@@ -4338,6 +4338,22 @@ double DRSBoard::GetTemperature()
 
 /*------------------------------------------------------------------*/
 
+int DRSBoard::Is2048ModeCapable()
+{
+   unsigned int status;
+   
+   if (fFirmwareVersion < 21305)
+      return 0;
+   
+   // Read pin J44 and return 1 if 2048 mode has been soldered
+   Read(T_STATUS, &status, REG_STATUS, 4);
+   if ((status & BIT_2048_MODE))
+      return 0;
+   return 1;
+}
+
+/*------------------------------------------------------------------*/
+
 int DRSBoard::GetTriggerBus()
 {
    unsigned size, d;
@@ -4594,7 +4610,7 @@ int DRSBoard::GetTimeCalibration(unsigned int chipIndex, int channelIndex, int m
 
    if (!force && !IsTimingCalibrationValid()) {
       for (i = 0; i < kNumberOfBins; i++)
-         time[i] = 1/fNominalFrequency;
+         time[i] = (float) (1/fNominalFrequency);
       return 1;
    }
 

@@ -1,7 +1,7 @@
 /********************************************************************
   DRS.h, S.Ritt, M. Schneebeli - PSI
 
-  $Id: DRS.h 21259 2014-02-06 16:21:24Z ritt $
+  $Id: DRS.h 21309 2014-04-11 14:51:29Z ritt $
 
 ********************************************************************/
 #ifndef DRS_H
@@ -165,6 +165,7 @@ unsigned int millitime();
 #define BIT_PLL_LOCKED3       (1<<4)    // 1 if PLL DRS4 D has locked (DRS4 mezzanine board only)
 #define BIT_SERIAL_BUSY       (1<<5)    // 1 if EEPROM operation in progress
 #define BIT_LMK_LOCKED        (1<<6)    // 1 if PLL of LMK chip has locked (DRS4 mezzanine board only)
+#define BIT_2048_MODE         (1<<7)    // 1 if 2048-bin mode has been soldered
 
 enum DRSBoardConstants {
    kNumberOfChannelsMax         =   10,
@@ -739,6 +740,7 @@ public:
    int          SetCalibVoltage(double value);
    int          SetCalibTiming(int t1, int t2);
    double       GetTemperature();
+   int          Is2048ModeCapable();
    int          GetTriggerBus();
    unsigned int GetScaler(int channel);
    int          ReadEEPROM(unsigned short page, void *buffer, int size);
