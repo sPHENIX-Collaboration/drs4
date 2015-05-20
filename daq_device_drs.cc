@@ -76,7 +76,7 @@ daq_device_drs::daq_device_drs(const int eventtype
   if ( speed != 0 
        && speed != 1
        && speed != 2
-       && speed != 5 )
+       && speed != 3 )
     {
       _speed = 0;
       cout << "invalid speed, setting 0.7GS/s"  << endl;
