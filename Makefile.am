@@ -3,8 +3,6 @@ AUTOMAKE_OPTIONS = foreign
 
 AM_LDFLAGS = -L$(libdir)
 
-WXINCLUDES = $(shell wx-config --cxxflags)
-
 INCLUDES = -I$(includedir) $(WXINCLUDES)
 
 
@@ -27,9 +25,7 @@ librcdaqplugin_drs_la_SOURCES = \
 
 librcdaqplugin_drs_la_LIBADD = libdrs.la 
 
-libdrs_la_LIBADD = -lpthread -lutil -lusb -lrcdaqutils -L/usr/lib64  -lwx_gtk2u_richtext-2.8 -lwx_gtk2u_aui-2.8 -lwx_gtk2u_xrc-2.8 -lwx_gtk2u_qa-2.8 -lwx_gtk2u_html-2.8 -lwx_gtk2u_adv-2.8 -lwx_gtk2u_core-2.8 -lwx_baseu_xml-2.8 -lwx_baseu_net-2.8 -lwx_baseu-2.8 
-
-#$(WXLIBS)
+libdrs_la_LIBADD = -lpthread -lutil -lusb -lrcdaqutils $(WXLIBS)
 
 
 clean-local:
