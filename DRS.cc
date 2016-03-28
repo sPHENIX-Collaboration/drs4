@@ -5,7 +5,7 @@
 
   Contents:     Library functions for DRS mezzanine and USB boards
 
-  $Id: DRS.cpp 21309 2014-04-11 14:51:29Z ritt $
+  $Id: DRS.cpp 21433 2014-07-30 12:53:51Z ritt $
 
 \********************************************************************/
 
@@ -1329,6 +1329,8 @@ int DRSBoard::Read(int type, void *data, unsigned int addr, int size)
    s_drsMutex->Lock();
 #endif
 
+   memset(data, 0, size);
+ 
    if (fTransport == TR_VME) {
 
 #ifdef HAVE_VME
@@ -1676,7 +1678,7 @@ void DRSBoard::SetNumberOfChannels(int nChannels)
 
 void DRSBoard::SetADCClkPhase(int phase, bool invert)
 {
-   unsigned short d;
+   unsigned short d = 0;
 
    /* Set the clock phase of the ADC via the variable phase shift
       in the Xilinx DCM. One unit is equal to the clock period / 256,
@@ -1780,6 +1782,8 @@ int DRSBoard::GetRegulationDAC(double *value)
       Read(T_STATUS, buffer, REG_RDAC3, 2);
    else if (fBoardType == 2 || fBoardType == 3 || fBoardType == 4)
       Read(T_STATUS, buffer, REG_RDAC1, 2);
+   else
+     memset(buffer, 0, sizeof(buffer));
 
    /* normalize to 2.5V for 16 bit */
    *value = 2.5 * (buffer[0] + (buffer[1] << 8)) / 0xFFFF;
@@ -3246,7 +3250,7 @@ int DRSBoard::SetMultiBufferRP(unsigned short rp)
 
 int DRSBoard::GetMultiBufferWP(void)
 {
-   unsigned short wp;
+   unsigned short wp = 0;
 
    if (fHasMultiBuffer)
       Read(T_STATUS, &wp, REG_WRITE_POINTER, 2);
@@ -4377,7 +4381,7 @@ int DRSBoard::GetTriggerBus()
 
 unsigned int DRSBoard::GetScaler(int channel)
 {
-   int reg;
+   int reg = 0;
    unsigned d;
    
    if (fBoardType < 9 || fFirmwareVersion < 21000 || fTransport != TR_USB2)
@@ -5277,7 +5281,7 @@ unsigned short buf[1024*16]; // 32 kB
 
    /* remove calibration voltage */
    EnableAcal(0, 0);
-   EnableTcal(0, 0);
+   EnableTcal(clkon, 0);
    EnableTrigger(trg1, trg2);
 
    return 1;
@@ -5290,7 +5294,7 @@ int DRSBoard::AnalyzeSlope(Averager *ave, int iIter, int nIter, int channel, flo
 {
    int i;
    float dv, llim, ulim;
-   double sum, dtCell, dtWindow;
+   double sum, dtCell;
    
    if (fNominalFrequency > 3) {
       llim = -100;
@@ -5356,7 +5360,6 @@ int DRSBoard::AnalyzeSlope(Averager *ave, int iIter, int nIter, int channel, flo
       
       sum /= kNumberOfBins;
       dtCell = (float)1/fNominalFrequency;
-      dtWindow = dtCell * kNumberOfBins;
       
       // here comes the central calculation, dT = dV/average * dt_cell
       for (i=0 ; i<kNumberOfBins ; i++)
@@ -6269,7 +6272,7 @@ bool ResponseCalibration::RecordCalibrationPointsV3(int chipNumber)
 bool ResponseCalibration::RecordCalibrationPointsV4(int chipNumber)
 {
    int i, j, k, n;
-   double voltage, s, s2, average, sigma;
+   double voltage, s, s2, average;
 
    if (fCurrentPoint == 0) {
       fBoard->SetDominoMode(1);
@@ -6321,7 +6324,6 @@ bool ResponseCalibration::RecordCalibrationPointsV4(int chipNumber)
          }
          n = fNumberOfSamples;
          average = s / n;
-         sigma = sqrt((n * s2 - s * s) / (n * (n - 1)));
 
          fResponseX[i][k][fCurrentPoint] = static_cast < float >(average);
       }

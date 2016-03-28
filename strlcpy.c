@@ -2,12 +2,27 @@
 
    Name:         strlcpy.c
    Created by:   Stefan Ritt
+   Copyright 2000 + Stefan Ritt
 
    Contents:     Contains strlcpy and strlcat which are versions of
                  strcpy and strcat, but which avoid buffer overflows
 
-   $Id: strlcpy.c 16 2005-10-07 13:05:38Z ritt $
+	
+  This file is part of MIDAS XML Library.
 
+  MIDAS XML Library is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  MIDAS XML Library is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with MIDAS XML Library.  If not, see <http://www.gnu.org/licenses/>.
+   
 \********************************************************************/
 
 #include <stdio.h>
@@ -19,6 +34,8 @@
 * will be copied.  Always NUL terminates (unless size == 0).
 * Returns strlen(src); if retval >= siz, truncation occurred.
 */
+#ifndef STRLCPY_DEFINED
+
 size_t strlcpy(char *dst, const char *src, size_t size)
 {
    char *d = dst;
@@ -80,3 +97,5 @@ size_t strlcat(char *dst, const char *src, size_t size)
 }
 
 /*-------------------------------------------------------------------*/
+
+#endif // STRLCPY_DEFINED

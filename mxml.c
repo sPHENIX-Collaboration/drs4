@@ -2,6 +2,7 @@
 
    Name:         mxml.c
    Created by:   Stefan Ritt
+   Copyright 2000 + Stefan Ritt
 
    Contents:     Midas XML Library
 
@@ -35,8 +36,22 @@
    functions is availabe to retrieve attributes and values from nodes
    in the tree and for manipulating nodes, like replacing, adding and
    deleting nodes.
+   
+   
+   This file is part of MIDAS XML Library.
 
-   $Id: mxml.c 73 2012-02-10 14:54:14Z ritt $
+   MIDAS XML Library is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   MIDAS XML Library is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with MIDAS XML Library.  If not, see <http://www.gnu.org/licenses/>.
 
 \********************************************************************/
 
@@ -76,7 +91,9 @@
 #endif
 
 #include "mxml.h"
+#ifndef HAVE_STRLCPY
 #include "strlcpy.h"
+#endif
 
 #define XML_INDENT "  "
 
