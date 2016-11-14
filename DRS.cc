@@ -3163,7 +3163,7 @@ int DRSBoard::SetInputRange(double center)
       // DRS4 USB Evaluation Boards + Mezzanine Board
 
       // only allow -0.5...0.5 to 0...1.0
-      if (center < 0 || center > 0.5)
+      if (center < -0.5 || center > 0.5)
          return 0;
 
       // remember range
