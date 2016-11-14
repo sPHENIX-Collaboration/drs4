@@ -55,7 +55,6 @@ daq_device_drs::daq_device_drs(const int eventtype
       for ( int i = 0; i < _drs->GetNumberOfBoards(); i++)
 	{
 	  b = _drs->GetBoard(i);
-	  cout << __FILE__ << " " <<  __LINE__ << " found S/N " << b->GetBoardSerialNumber() << endl;
 	  if  ( b->GetBoardSerialNumber() == _serialnumber) break;
 	  else b = 0;
 	}
