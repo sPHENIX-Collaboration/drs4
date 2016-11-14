@@ -520,7 +520,7 @@ void drs_plugin::identify(std::ostream& os, const int flag) const
     {
       os << " - DRS Plugin, provides - " << std::endl;
       os << " -     device_drs (evttype, subid, triggerchannel, triggerthreshold[mV], slope[n/p], delay[ns], speed, start_ch, nch, baseline[mV]) - DRS4 Eval Board " << std::endl;
-      os << " -     device_drs_by_serialnumber ";
+      os << " -     device_drs_by_serialnumber " << std::endl;
       os << "                  (evttype, subid, serialnumber, triggerchannel, triggerthreshold[mV], slope[n/p], delay[ns], speed, start_ch, nch, baseline[mV]) - DRS4 Eval Board " << std::endl;
     }
       
