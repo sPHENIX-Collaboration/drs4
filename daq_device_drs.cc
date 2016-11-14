@@ -7,24 +7,34 @@
 
 using namespace std;
 
+DRS *daq_device_drs::_drs=0;
+
 daq_device_drs::daq_device_drs(const int eventtype
-					   , const int subeventid
-					   , const int trigger
-					   , const float triggerthreshold
-					   , const int slope
-					   , const int delay
-					   , const int speed
-					   , const int start
-					   , const int nch)
+			       , const int subeventid
+			       , const int serialnumber
+			       , const int trigger
+			       , const float triggerthreshold
+			       , const int slope
+			       , const int delay
+			       , const int speed
+			       , const int start
+			       , const int nch
+			       , const int baseline)
 {
 
   m_eventType  = eventtype;
   m_subeventid = subeventid;
 
+  _serialnumber = serialnumber;
+
   _trigger_handler=0;
   _broken = 0;
 
-  _drs = new DRS();
+  if ( ! _drs)
+    {
+      _drs = new DRS();
+    }
+  
   if (  _drs->GetNumberOfBoards() == 0)
     {
       _broken = 1;
@@ -34,9 +44,31 @@ daq_device_drs::daq_device_drs(const int eventtype
       return;
     }
 
-  b = _drs->GetBoard(0);
+  // this is new: we can now select which board we want
+  
+  if ( ! _serialnumber)
+    {
+      b = _drs->GetBoard(0);
+    }
+  else
+    {
+      for ( int i = 0; i < _drs->GetNumberOfBoards(); i++)
+	{
+	  b = _drs->GetBoard(i);
+	  cout << __FILE__ << " " <<  __LINE__ << " found S/N " << b->GetBoardSerialNumber() << endl;
+	  if  ( b->GetBoardSerialNumber() == _serialnumber) break;
+	  else b = 0;
+	}
+    }
 
-
+  //safety belt
+  if ( ! b)
+    {
+      _broken = 1;
+      return;
+    }
+    
+  
   // the trigger allows to make an "or" of 5 triggers
   _trigger = trigger & 0x1f;
 
@@ -54,6 +86,8 @@ daq_device_drs::daq_device_drs(const int eventtype
 
   _start = start;
   _nch = nch;
+
+  _baseline = baseline;
 
   if (  _start  > 1023 )
     {
@@ -105,7 +139,6 @@ daq_device_drs::~daq_device_drs()
 {
   // if (b) delete b;
   
-  if ( _drs ) delete _drs;
   b = 0;
 
   if (_th)
@@ -166,7 +199,16 @@ int  daq_device_drs::init()
     }
   b->SetRefclk(0);
 
- 
+  if ( _baseline) 
+    {
+      double bl = _baseline;
+      bl /= -1000;
+      cout << __LINE__ << "  " << __FILE__ << " setting baseline to  " << bl << endl;
+
+      b->SetInputRange(bl);
+      
+    }
+
   // and we trigger rearm with our event type so it takes effect
   rearm (m_eventType);
 
@@ -291,7 +333,8 @@ void daq_device_drs::identify(std::ostream& os) const
 	//	 << getGS() << " ( " << getActualGS() << ") GS) "
 	 << getGS() <<  "GS) "
 	 << " start " << _start << " nch " << _nch;
-      if (_trigger_handler) os << " *Trigger" ;
+      if ( _baseline) os << " baseline " << _baseline;
+      if (_trigger_handler) os << " *Trigger*" ;
       os << endl;
 
     }
