@@ -146,6 +146,8 @@ int  daq_device_drs::init()
       if ( _trigger & 0x10) // external trigger
 	{
 	  b->EnableTrigger(1,0);   //external trigger
+	  b->SetTriggerPolarity(_slope);
+	  b->SetTriggerDelayNs(_delay);
 	}
       else
 	{
