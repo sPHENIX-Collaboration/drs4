@@ -22,7 +22,10 @@ WXFLAGS=`wx-config --cxxflags`
 AC_SUBST(WXLIBS)
 AC_SUBST(WXFLAGS)
 
+AC_CHECK_HEADER([rpc/rpc.h], [ ],
+                [AC_SUBST(AM_CPPFLAGS, "$AM_CPPFLAGS -I/usr/include/tirpc")] [AC_SUBST(RPC_LDD, "-ltirpc")])
 
+		
 CXXFLAGS="$CXXFLAGS $WXFLAGS"
 
 
