@@ -69,7 +69,7 @@ daq_device_drs::daq_device_drs(const int eventtype
     
   
   // the trigger allows to make an "or" of 5 triggers
-  _trigger = trigger & 0x1f;
+  _trigger = trigger & 0x1f1f;
 
   // bit number 5 says if we also provide the system trigger
   if (trigger & 0x20)
