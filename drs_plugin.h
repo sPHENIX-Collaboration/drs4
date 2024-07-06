@@ -1,5 +1,5 @@
-#ifndef __TSPM_PLUGIN_H__
-#define __TSPM_PLUGIN_H__
+#ifndef __DRS_PLUGIN_H__
+#define __DRS_PLUGIN_H__
 
 #include <rcdaq_plugin.h>
 
