@@ -50,8 +50,10 @@ public:
   int _broken;
 
   int _serialnumber;
+  int _myBoardnr;
 
   int _trigger;
+  int _ext_clock;
   int _trigger_handler;
   double _tthreshold;
   int _slope;

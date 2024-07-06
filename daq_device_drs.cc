@@ -49,15 +49,27 @@ daq_device_drs::daq_device_drs(const int eventtype
   if ( ! _serialnumber)
     {
       b = _drs->GetBoard(0);
+      _myBoardnr = 0;
     }
   else
     {
-      for ( int i = 0; i < _drs->GetNumberOfBoards(); i++)
+      int i;
+      for ( i = 0; i < _drs->GetNumberOfBoards(); i++)
 	{
 	  b = _drs->GetBoard(i);
-	  if  ( b->GetBoardSerialNumber() == _serialnumber) break;
-	  else b = 0;
+	  if  ( b->GetBoardSerialNumber() == _serialnumber)
+	    {
+	      _myBoardnr = i;
+	      break;
+	    }
+	  else
+	    {
+	      b = 0;
+	      _myBoardnr = -1;
+	      _broken = 2;
+	    }
 	}
+
     }
 
   //safety belt
@@ -75,6 +87,16 @@ daq_device_drs::daq_device_drs(const int eventtype
   if (trigger & 0x20)
     { 
       _trigger_handler = 1 ; 
+    }
+
+  // bit number 6 says that this device runs in external clock mode
+  if (trigger & 0x40)
+    { 
+      _ext_clock = 1 ; 
+    }
+  else
+    {
+      _ext_clock = 0 ;
     }
 
   //  cout << "** " <<  __FILE__ << " triggerhandler " << _trigger_handler << endl;
@@ -180,6 +202,7 @@ int  daq_device_drs::init()
 	  b->EnableTrigger(1,0);   //external trigger
 	  b->SetTriggerPolarity(_slope);
 	  b->SetTriggerDelayNs(_delay);
+
 	}
       else
 	{
@@ -194,10 +217,23 @@ int  daq_device_drs::init()
 	  b->SetTriggerLevel(_tthreshold);
 	  b->SetTriggerPolarity(_slope);
 	  b->SetTriggerDelayNs(_delay);
+	      
 	}
     }
-  b->SetRefclk(0);
-
+  if ( _ext_clock)
+    {
+      b->SetRefclk(1);
+      if ( b->GetScaler(5) <= 300000)
+	{
+	  cout << __LINE__ << "  " << __FILE__ << "external clock selected but no clock found" << endl;
+	  _broken = 3;
+	}
+    }
+  else
+    {
+      b->SetRefclk(0);
+    }
+  
   if ( _baseline) 
     {
       double bl = _baseline;
@@ -312,9 +348,27 @@ void daq_device_drs::identify(std::ostream& os) const
 {
   if ( _broken) 
     {
+
+      std::string errorstr;
+      switch (_broken)
+	{
+	case 1:
+	  errorstr = "no board found";
+	  break;
+	case 2:
+	  errorstr = "selected board serial number not found";
+	  break;
+	case 3:
+	  errorstr = "ext. clock selected but no clock found";
+	  break;
+	default:
+	  break;
+	}
+	  
+		 
       os << "DRS4 Eval Board  Event Type: " << m_eventType 
 	 << " Subevent id: " << m_subeventid 
-	 << " ** not functional ** " << endl;
+	 << " ** not functional ** -- " << errorstr << endl;
     }
   else
     {
