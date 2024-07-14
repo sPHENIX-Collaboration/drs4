@@ -53,6 +53,8 @@ daq_device_drs::daq_device_drs(const int eventtype
     }
   else
     {
+      b = 0;
+      _myBoardnr = -1;
       int i;
       for ( i = 0; i < _drs->GetNumberOfBoards(); i++)
 	{
@@ -62,12 +64,7 @@ daq_device_drs::daq_device_drs(const int eventtype
 	      _myBoardnr = i;
 	      break;
 	    }
-	  else
-	    {
-	      b = 0;
-	      _myBoardnr = -1;
-	      _broken = 2;
-	    }
+
 	}
 
     }
