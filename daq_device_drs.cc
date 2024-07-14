@@ -93,6 +93,7 @@ daq_device_drs::daq_device_drs(const int eventtype
   if (trigger & 0x40)
     { 
       _ext_clock = 1 ; 
+      cout << "** " <<  __FILE__ << " running in ext clock mode "  << endl;
     }
   else
     {
