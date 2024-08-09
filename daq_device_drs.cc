@@ -7,6 +7,9 @@
 
 using namespace std;
 
+#define coutfl std::cout << __FILE__ << " " << __LINE__ << " "
+#define cerrfl std::cerr << __FILE__ << " " << __LINE__ << " "
+
 DRS *daq_device_drs::_drs=0;
 
 daq_device_drs::daq_device_drs(const int eventtype
@@ -59,9 +62,11 @@ daq_device_drs::daq_device_drs(const int eventtype
       for ( i = 0; i < _drs->GetNumberOfBoards(); i++)
 	{
 	  b = _drs->GetBoard(i);
+	  coutfl << "board nr " << i << " serial " << b->GetBoardSerialNumber() << " wanted is " << _serialnumber << endl;
 	  if  ( b->GetBoardSerialNumber() == _serialnumber)
 	    {
 	      _myBoardnr = i;
+	      coutfl << "Serial number " << b->GetBoardSerialNumber() << " at index " << i << endl;
 	      break;
 	    }
 
@@ -86,11 +91,12 @@ daq_device_drs::daq_device_drs(const int eventtype
       _trigger_handler = 1 ; 
     }
 
+  coutfl << "trigger word is " << hex << trigger << dec << endl; 
   // bit number 6 says that this device runs in external clock mode
   if (trigger & 0x40)
     { 
       _ext_clock = 1 ; 
-      cout << "** " <<  __FILE__ << " running in ext clock mode "  << endl;
+      coutfl << "Board " << _serialnumber << " running in ext clock mode "  << endl;
     }
   else
     {
@@ -221,11 +227,11 @@ int  daq_device_drs::init()
   if ( _ext_clock)
     {
       b->SetRefclk(1);
-      if ( b->GetScaler(5) <= 300000)
-	{
-	  cout << __LINE__ << "  " << __FILE__ << "external clock selected but no clock found" << endl;
-	  _broken = 3;
-	}
+      // if ( b->GetScaler(5) <= 300000)
+      // 	{
+      // 	  cout << __LINE__ << "  " << __FILE__ << "external clock selected but no clock found" << endl;
+      // 	  _broken = 3;
+      // 	}
     }
   else
     {
@@ -374,7 +380,7 @@ void daq_device_drs::identify(std::ostream& os) const
 	  << " Subevent id: " << m_subeventid 
 	  << " S/N "     << b->GetBoardSerialNumber() 
 	  << " Type  " << b->GetBoardType()
-	  << " Trg " << _trigger
+	  << " Trg 0x" << hex<<_trigger << dec
 	  << " Thresh " << _tthreshold*1000 <<"mV";
       if (_slope) os << " neg " ;
       else os << " pos "; 
@@ -385,6 +391,7 @@ void daq_device_drs::identify(std::ostream& os) const
 	 << getGS() <<  "GS) "
 	 << " start " << _start << " nch " << _nch;
       if ( _baseline) os << " baseline " << _baseline;
+      if ( _ext_clock) os << " ext. clock";
       if (_trigger_handler) os << " *Trigger*" ;
       os << endl;
 
